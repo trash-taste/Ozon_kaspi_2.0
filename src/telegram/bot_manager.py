@@ -1,8 +1,10 @@
 import asyncio
 import logging
 import threading
-from typing import Optional, TYPE_CHECKING, Dict
-from aiogram import Bot, Dispatcher
+from typing import Optional, TYPE_CHECKING
+from urllib.parse import urlparse
+
+from aiogram import BaseMiddleware, Bot, Dispatcher
 from aiogram.filters import Command, StateFilter
 from aiogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, FSInputFile
 from aiogram.fsm.context import FSMContext
@@ -14,9 +16,26 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+class FSMLoggingMiddleware(BaseMiddleware):
+    async def __call__(self, handler, event, data):
+        state = data.get("state")
+        current_state = await state.get_state() if state else None
+        logger.info(
+            "Telegram message: user_id=%s state=%s text=%r",
+            getattr(getattr(event, "from_user", None), "id", None),
+            current_state,
+            getattr(event, "text", None),
+        )
+        return await handler(event, data)
+
+
+class ScanStates(StatesGroup):
+    waiting_for_limit = State()
+
+
 class ParsingStates(StatesGroup):
     waiting_for_url = State()
-    waiting_for_count = State()
     settings_menu = State()
     waiting_for_default_count = State()
 
@@ -48,7 +67,6 @@ class TelegramBotManager:
         self.is_running = False
         self.bot_thread: Optional[threading.Thread] = None
         self.db = Database()
-        self.user_data: Dict[str, dict] = {}
         self.parsing_user_id = None
         
         self._register_handlers()
@@ -136,6 +154,8 @@ class TelegramBotManager:
                     logger.error(f"Ошибка закрытия event loop: {e}")
     
     def _register_handlers(self):
+        self.dp.message.outer_middleware(FSMLoggingMiddleware())
+
         self.dp.message.register(self._cmd_start, Command('start'))
         self.dp.message.register(self._cmd_status, Command('status'))
         self.dp.message.register(self._cmd_settings, Command('settings'))
@@ -143,9 +163,9 @@ class TelegramBotManager:
         
         self.dp.callback_query.register(self._handle_callback)
         self.dp.message.register(self._handle_url_input, StateFilter(ParsingStates.waiting_for_url))
-        self.dp.message.register(self._handle_count_input, StateFilter(ParsingStates.waiting_for_count))
+        self.dp.message.register(self._handle_count_input, StateFilter(ScanStates.waiting_for_limit))
         self.dp.message.register(self._handle_default_count_input, StateFilter(ParsingStates.waiting_for_default_count))
-        self.dp.message.register(self._handle_message)
+        self.dp.message.register(self._handle_message, StateFilter(None))
     
     async def _cmd_start(self, message: Message, state: FSMContext = None):
         await self._show_main_menu(message, state)
@@ -336,10 +356,14 @@ class TelegramBotManager:
             await query.message.reply("Выберите действие:", reply_markup=keyboard)
         elif data == "skip_count":
             user_id = str(query.from_user.id)
-            if user_id in self.user_data and 'url' in self.user_data[user_id]:
+            state_data = await state.get_data()
+            url = state_data.get("ozon_url")
+            if url:
                 settings = self.db.get_user_settings(user_id)
                 default_count = settings.get('default_product_count', 500)
-                await self._start_parsing_with_count(query, self.user_data[user_id]['url'], default_count)
+                default_count = min(max(int(default_count), 1), 500)
+                await state.clear()
+                await self._start_parsing_with_count(query, url, default_count)
             else:
                 await query.answer("Сначала отправьте ссылку на категорию Ozon", show_alert=True)
                 return
@@ -390,22 +414,25 @@ class TelegramBotManager:
             ], resize_keyboard=True)
             await message.reply("❌ Неверная ссылка. Отправьте ссылку на категорию Ozon:", reply_markup=keyboard)
             return
-        
-        user_id = str(message.from_user.id)
-        if user_id not in self.user_data:
-            self.user_data[user_id] = {}
-        self.user_data[user_id]['url'] = message.text.strip()
-        
-        settings = self.db.get_user_settings(user_id)
-        default_count = settings.get('default_product_count', 500)
-        
-        keyboard = ReplyKeyboardMarkup(keyboard=[
-            [KeyboardButton(text=f"⏭️ Скип (по умолчанию {default_count})")],
-            [KeyboardButton(text="❌ Отмена")]
-        ], resize_keyboard=True)
-        
-        await message.reply("🔢 Введите количество товаров для парсинга (цифрами):", reply_markup=keyboard)
-        await state.set_state(ParsingStates.waiting_for_count)
+
+        await self._request_limit(message, state, message.text)
+
+    async def _request_limit(
+        self,
+        message: Message,
+        state: FSMContext,
+        ozon_url: str,
+    ):
+        await state.update_data(ozon_url=ozon_url.strip())
+        await state.set_state(ScanStates.waiting_for_limit)
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="❌ Отмена")]],
+            resize_keyboard=True,
+        )
+        await message.reply(
+            "Сколько товаров спарсить? Отправьте число, например 10.",
+            reply_markup=keyboard,
+        )
     
     async def _handle_count_input(self, message: Message, state: FSMContext):
         if not self._is_authorized_user(message):
@@ -413,38 +440,27 @@ class TelegramBotManager:
         
         if message.text == "❌ Отмена":
             await state.clear()
-            await self._cmd_start(message)
+            await self._cmd_start(message, state)
             return
-        
-        user_id = str(message.from_user.id)
-        settings = self.db.get_user_settings(user_id)
-        default_count = settings.get('default_product_count', 500)
-        
-        if message.text == f"⏭️ Скип (по умолчанию {default_count})":
-            url = self.user_data.get(user_id, {}).get('url')
-            if url:
-                await self._start_parsing_with_count(message, url, default_count)
-            return
-        
+
         try:
-            count = int(message.text.strip())
-            if count < 1 or count > 10000:
+            count = int((message.text or "").strip())
+            if count < 1 or count > 500:
                 raise ValueError()
-        except ValueError:
-            keyboard = ReplyKeyboardMarkup(keyboard=[
-                [KeyboardButton(text=f"⏭️ Скип (по умолчанию {default_count})")],
-                [KeyboardButton(text="❌ Отмена")]
-            ], resize_keyboard=True)
-            await message.reply("❌ Введите число от 1 до 10000:", reply_markup=keyboard)
+        except (TypeError, ValueError):
+            await message.reply("Введите число от 1 до 500.")
             return
-        
-        user_id = str(message.from_user.id)
-        url = self.user_data.get(user_id, {}).get('url')
+
+        state_data = await state.get_data()
+        url = state_data.get("ozon_url")
         if url:
+            await state.clear()
             await self._start_parsing_with_count(message, url, count)
         else:
-            await message.reply("❌ Ошибка: URL не найден")
             await state.clear()
+            await message.reply(
+                "Ссылка Ozon не найдена. Отправьте ссылку заново."
+            )
     
     async def _start_parsing_with_count(self, message_or_query, url: str, count: int):
         self.app_manager.settings.MAX_PRODUCTS = count
@@ -454,7 +470,7 @@ class TelegramBotManager:
             [KeyboardButton(text="❌ Завершить")]
         ], resize_keyboard=True)
         
-        text = f"🚀 Запускаю парсинг {count} товаров...\n\nЭто может занять несколько минут."
+        text = f"Начинаю парсинг {count} товаров...\n\nЭто может занять несколько минут."
         
         await self._reply_to(message_or_query, text, reply_markup=keyboard)
         
@@ -498,89 +514,43 @@ class TelegramBotManager:
         await query.message.reply("Выберите действие:", reply_markup=keyboard)
         await state.clear()
     
-    async def _handle_message(self, message: Message):
+    async def _handle_message(self, message: Message, state: FSMContext):
         if not self._is_authorized_user(message):
             return
         
         text = message.text or ""
         
         if text == "🚀 Начать парсинг":
-            await self._start_parsing_flow_from_keyboard(message)
+            await self._start_parsing_flow_from_keyboard(message, state)
         elif text == "📊 Статус":
             await self._show_status(message)
         elif text == "🔧 Ресурсы":
             await self._show_resources_status(message)
         elif text == "⚙️ Настройки":
-            state = FSMContext(storage=self.dp.storage, key=f"user:{message.from_user.id}")
             await self._show_settings(message, state)
         elif text == "❓ Помощь":
             await self._show_help(message)
         elif text == "🏠 Главное меню":
-            await self._cmd_start(message)
+            await self._cmd_start(message, state)
         elif text == "🔄 Обновить":
             await self._show_status(message)
         elif text == "❌ Завершить":
             self.app_manager.stop_parsing()
             await message.reply("⏹️ Парсинг остановлен")
-            await self._cmd_start(message)
+            await self._cmd_start(message, state)
         elif self._is_ozon_category_url(text):
-            # Обработка URL без состояния
-            user_id = str(message.from_user.id)
-            if user_id not in self.user_data:
-                self.user_data[user_id] = {}
-            self.user_data[user_id]['url'] = text.strip()
-            self.user_data[user_id]['waiting_for_count'] = True
-            
-            user_id = str(message.from_user.id)
-            settings = self.db.get_user_settings(user_id)
-            default_count = settings.get('default_product_count', 500)
-            
-            keyboard = ReplyKeyboardMarkup(keyboard=[
-                [KeyboardButton(text=f"⏭️ Скип (по умолчанию {default_count})")],
-                [KeyboardButton(text="❌ Отмена")]
-            ], resize_keyboard=True)
-            
-            await message.reply("🔢 Введите количество товаров для парсинга (цифрами):", reply_markup=keyboard)
-        elif text and text.isdigit():
-            # Обработка числового ввода
-            user_id = str(message.from_user.id)
-            if user_id in self.user_data and self.user_data[user_id].get('waiting_for_count'):
-                count = int(text)
-                if 1 <= count <= 10000:
-                    url = self.user_data[user_id].get('url')
-                    if url:
-                        self.user_data[user_id]['waiting_for_count'] = False
-                        await self._start_parsing_with_count(message, url, count)
-                        return
-                else:
-                    keyboard = ReplyKeyboardMarkup(keyboard=[
-                        [KeyboardButton(text="⏭️ Скип (по умолчанию 500)")],
-                        [KeyboardButton(text="❌ Отмена")]
-                    ], resize_keyboard=True)
-                    await message.reply("❌ Введите число от 1 до 10000:", reply_markup=keyboard)
-                    return
-            
-            await message.reply("❓ Используйте кнопки меню или команды:\n/start - главное меню\n/help - помощь")
-        elif text.startswith("⏭️ Скип (по умолчанию"):
-            user_id = str(message.from_user.id)
-            if user_id in self.user_data and self.user_data[user_id].get('waiting_for_count'):
-                url = self.user_data[user_id].get('url')
-                if url:
-                    self.user_data[user_id]['waiting_for_count'] = False
-                    settings = self.db.get_user_settings(user_id)
-                    default_count = settings.get('default_product_count', 500)
-                    await self._start_parsing_with_count(message, url, default_count)
-                    return
-            await message.reply("❌ Сначала отправьте ссылку на категорию Ozon.")
+            await self._request_limit(message, state, text)
         elif text == "❌ Отмена":
-            user_id = str(message.from_user.id)
-            if user_id in self.user_data:
-                self.user_data[user_id]['waiting_for_count'] = False
-            await self._cmd_start(message)
+            await state.clear()
+            await self._cmd_start(message, state)
         else:
             await message.reply("❓ Используйте кнопки меню или команды:\n/start - главное меню\n/help - помощь\n\nИли отправьте ссылку на категорию Ozon для начала парсинга.")
     
-    async def _start_parsing_flow_from_keyboard(self, message: Message):
+    async def _start_parsing_flow_from_keyboard(
+        self,
+        message: Message,
+        state: FSMContext,
+    ):
         if self.app_manager.is_running:
             keyboard = ReplyKeyboardMarkup(keyboard=[
                 [KeyboardButton(text="❌ Завершить"), KeyboardButton(text="🏠 Главное меню")]
@@ -591,7 +561,6 @@ class TelegramBotManager:
                 [KeyboardButton(text="❌ Отмена")]
             ], resize_keyboard=True)
             await message.reply("🔗 Отправьте ссылку на категорию Ozon:", reply_markup=keyboard)
-            state = FSMContext(storage=self.dp.storage, key=f"user:{message.from_user.id}")
             await state.set_state(ParsingStates.waiting_for_url)
     
     def _is_authorized_user(self, message_or_query) -> bool:
@@ -608,10 +577,20 @@ class TelegramBotManager:
             await message_or_query.reply(text, **kwargs)
     
     def _is_ozon_category_url(self, url: str) -> bool:
+        try:
+            parsed = urlparse(url.strip())
+        except (AttributeError, ValueError):
+            return False
+
+        host = (parsed.hostname or "").casefold()
+        is_ozon_host = host in {"ozon.ru", "ozon.kz"} or host.endswith(
+            (".ozon.ru", ".ozon.kz")
+        )
+        allowed_paths = ("/category/", "/search/", "/seller/", "/s/")
         return (
-            url.startswith(('http://', 'https://')) and
-            'ozon.ru' in url and
-            ('/category/' in url or '/search/' in url or '/seller/' in url)
+            parsed.scheme in {"http", "https"}
+            and is_ozon_host
+            and parsed.path.startswith(allowed_paths)
         )
     
     async def send_message(self, text: str) -> bool:

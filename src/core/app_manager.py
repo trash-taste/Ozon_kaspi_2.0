@@ -221,6 +221,8 @@ class AppManager:
             self._save_results_to_file(user_id)
             self._export_to_excel(user_id)
             if self.telegram_bot and user_id:
+                self._compare_with_kaspi_and_send(user_id)
+            if self.telegram_bot and user_id:
                 self._send_report_to_telegram(user_id)
             
         finally:
@@ -366,6 +368,94 @@ class AppManager:
             
         except Exception as e:
             logger.error(f"Ошибка экспорта в Excel: {e}")
+
+    def _build_ozon_products_for_comparison(
+        self,
+        user_id: str,
+    ) -> list[dict]:
+        results = self.user_results.get(user_id, self.last_results)
+        product_links = results.get("links", {})
+        normalized_products = []
+
+        for product in results.get("products", []):
+            if not getattr(product, "success", False):
+                continue
+
+            price = getattr(product, "price", 0) or getattr(
+                product,
+                "card_price",
+                0,
+            )
+            title = str(getattr(product, "name", "") or "").strip()
+            if not title or not price:
+                continue
+
+            ozon_article = str(
+                getattr(product, "article", "") or ""
+            ).strip()
+            product_url = next(
+                (
+                    url
+                    for url in product_links
+                    if ozon_article and ozon_article in url
+                ),
+                "",
+            )
+            normalized_products.append(
+                {
+                    "title": title,
+                    "price": price,
+                    "url": product_url,
+                    "brand": None,
+                    # ProductInfo.article is an Ozon card ID, not a model.
+                    "article": None,
+                    "category": results.get("category_url"),
+                }
+            )
+
+        return normalized_products
+
+    def _compare_with_kaspi_and_send(self, user_id: str):
+        try:
+            from services.kaspi_compare import compare_with_kaspi
+            from services.report import save_arbitrage_report
+
+            ozon_products = self._build_ozon_products_for_comparison(user_id)
+            logger.info(
+                "Запуск сравнения с Kaspi для пользователя %s: %s товаров",
+                user_id,
+                len(ozon_products),
+            )
+            self._notify_user(
+                user_id,
+                "Сравниваю найденные товары с Kaspi...",
+            )
+
+            arbitrage_items = asyncio.run(
+                compare_with_kaspi(ozon_products)
+            )
+            report_path = save_arbitrage_report(arbitrage_items)
+            caption = (
+                "Сравнение с Kaspi завершено.\n"
+                f"Подходящих товаров: {len(arbitrage_items)}.\n"
+                "Excel-файл готов."
+            )
+            self._send_files_to_telegram(
+                report_path,
+                user_id,
+                caption=caption,
+            )
+        except Exception as e:
+            logger.exception(
+                "Ошибка сравнения с Kaspi для пользователя %s: %s",
+                user_id,
+                e,
+            )
+            self._notify_user(
+                user_id,
+                "Не удалось завершить сравнение с Kaspi. "
+                "Ozon-отчет уже сохранен.",
+            )
     
     def start_telegram_bot(self, bot_token: str, user_ids) -> bool:
         try:
@@ -431,10 +521,25 @@ class AppManager:
     def _send_report_to_telegram(self, user_id: str = None):
         self._send_via_temp_bot(report_only=True, target_user_id=user_id)
     
-    def _send_files_to_telegram(self, excel_path: str, user_id: str = None):
-        self._send_via_temp_bot(excel_path=excel_path, target_user_id=user_id)
-    
-    def _send_via_temp_bot(self, excel_path: str = None, report_only: bool = False, target_user_id: str = None):
+    def _send_files_to_telegram(
+        self,
+        excel_path: str,
+        user_id: str = None,
+        caption: str = None,
+    ):
+        self._send_via_temp_bot(
+            excel_path=excel_path,
+            target_user_id=user_id,
+            caption=caption,
+        )
+
+    def _send_via_temp_bot(
+        self,
+        excel_path: str = None,
+        report_only: bool = False,
+        target_user_id: str = None,
+        caption: str = None,
+    ):
         try:
             from ..utils.config_loader import load_telegram_config
             
@@ -501,7 +606,7 @@ class AppManager:
                             await temp_bot.send_message(chat_id=target_user, text=report, parse_mode="HTML")
                         
                         if excel_path:
-                            caption = (
+                            document_caption = caption or (
                                 "🎉 <b>Парсинг успешно завершен!</b>\n\n"
                                 "📊 <b>Ваш Excel файл готов!</b>\n"
                                 "💎 Данные отформатированы и готовы к использованию\n\n"
@@ -512,8 +617,8 @@ class AppManager:
                             await temp_bot.send_document(
                                 chat_id=target_user,
                                 document=document,
-                                caption=caption,
-                                parse_mode="HTML"
+                                caption=document_caption,
+                                parse_mode="HTML" if not caption else None,
                             )
                     
                     if excel_path:
