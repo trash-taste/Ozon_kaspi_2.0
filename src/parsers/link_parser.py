@@ -6,6 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Tuple
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
@@ -301,7 +302,8 @@ class OzonLinkParser:
         page_source = html.unescape(self.driver.page_source)
         page_source = page_source.replace("\\u002F", "/").replace("\\/", "/")
         pattern = (
-            r'(?:https?:)?//(?:www\.)?ozon\.ru/product/[^"\'<>\s\\]+'
+            r'(?:https?:)?//(?:www\.)?ozon\.(?:ru|kz)/product/'
+            r'[^"\'<>\s\\]+'
             r'|/product/[^"\'<>\s\\]+'
         )
         return re.findall(pattern, page_source)
@@ -327,19 +329,32 @@ class OzonLinkParser:
         if href.startswith("//"):
             href = "https:" + href
         elif href.startswith("/"):
-            href = "https://www.ozon.ru" + href
+            current_url = getattr(self.driver, "current_url", "") or ""
+            href = urljoin(current_url or "https://www.ozon.ru", href)
 
-        match = re.search(
-            r'https?://(?:www\.)?ozon\.ru/product/[^?#\s"\'<>]+',
-            href,
-        )
-        if not match:
+        try:
+            parsed = urlsplit(href)
+        except ValueError:
             return ""
 
-        url = match.group(0)
-        if re.search(r"/product/(?:[^/]+-)?\d+/?$", url):
-            return url
-        return ""
+        host = (parsed.hostname or "").casefold()
+        if host not in {"ozon.ru", "www.ozon.ru", "ozon.kz", "www.ozon.kz"}:
+            return ""
+        if not re.fullmatch(
+            r"/product/(?:[^/]+-)?\d+/?",
+            parsed.path,
+        ):
+            return ""
+
+        return urlunsplit(
+            (
+                parsed.scheme or "https",
+                parsed.netloc,
+                parsed.path,
+                "",
+                "",
+            )
+        )
 
     def _normalize_image_url(self, img_url: str) -> str:
         if not img_url:

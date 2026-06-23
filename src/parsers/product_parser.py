@@ -81,7 +81,7 @@ class ProductWorker:
         return results
     
     def _parse_single_product(self, article: str, product_url: str) -> ProductInfo:
-        max_retries = 3
+        max_retries = 2
         
         for attempt in range(max_retries):
             try:
@@ -94,7 +94,7 @@ class ProductWorker:
                         continue
                     return ProductInfo(article=article, error="Не удалось загрузить карточку товара")
 
-                WebDriverWait(self.driver, 30).until(
+                WebDriverWait(self.driver, 15).until(
                     lambda driver: driver.find_elements(By.CSS_SELECTOR, "h1")
                 )
 
