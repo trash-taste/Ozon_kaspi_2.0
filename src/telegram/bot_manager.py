@@ -586,7 +586,13 @@ class TelegramBotManager:
         is_ozon_host = host in {"ozon.ru", "ozon.kz"} or host.endswith(
             (".ozon.ru", ".ozon.kz")
         )
-        allowed_paths = ("/category/", "/search/", "/seller/", "/s/")
+        allowed_paths = (
+            "/category/",
+            "/search/",
+            "/seller/",
+            "/s/",
+            "/t/",
+        )
         return (
             parsed.scheme in {"http", "https"}
             and is_ozon_host

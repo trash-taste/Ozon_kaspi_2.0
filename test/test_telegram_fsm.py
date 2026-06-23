@@ -86,8 +86,16 @@ class TelegramFSMTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(
             manager._is_ozon_category_url(
+                "https://ozon.kz/t/7WRPYsS"
+            )
+        )
+        self.assertTrue(
+            manager._is_ozon_category_url(
                 "https://www.ozon.ru/category/elektronika-15500/"
             )
+        )
+        self.assertFalse(
+            manager._is_ozon_category_url("https://ozon.kz")
         )
         self.assertFalse(
             manager._is_ozon_category_url(
