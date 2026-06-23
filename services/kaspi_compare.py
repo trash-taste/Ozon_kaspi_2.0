@@ -23,6 +23,12 @@ NEAR_BEST_SCORE_DELTA = 5.0
 MAX_CONCURRENT_SEARCHES = 5
 SEARCH_PAGES = (0, 1)
 REQUEST_RETRIES = 3
+REQUEST_TIMEOUT_SECONDS = float(
+    os.getenv("KASPI_REQUEST_TIMEOUT", "12")
+)
+COMPARE_TIMEOUT_SECONDS = float(
+    os.getenv("KASPI_COMPARE_TIMEOUT", "180")
+)
 MONEY_QUANT = Decimal("0.01")
 
 
@@ -257,7 +263,7 @@ async def search_kaspi_product(query: str) -> list[dict]:
     if context is not None:
         return await _search_with_context(context, query)
 
-    timeout = aiohttp.ClientTimeout(total=30)
+    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
     async with aiohttp.ClientSession(timeout=timeout) as session:
         temporary = _SearchContext(
             session=session,
@@ -403,7 +409,7 @@ async def compare_with_kaspi(
         min_profit_decimal,
     )
 
-    timeout = aiohttp.ClientTimeout(total=30)
+    timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
     context_token: Token[_SearchContext | None] | None = None
     matched_count = 0
     filtered_items: list[dict[str, Any]] = []
@@ -415,16 +421,26 @@ async def compare_with_kaspi(
         )
         context_token = _search_context.set(context)
         try:
-            results = await asyncio.gather(
-                *(
-                    _compare_one(
-                        product,
-                        min_roi_decimal,
-                        min_profit_decimal,
-                    )
-                    for product in ozon_products
+            try:
+                results = await asyncio.wait_for(
+                    asyncio.gather(
+                        *(
+                            _compare_one(
+                                product,
+                                min_roi_decimal,
+                                min_profit_decimal,
+                            )
+                            for product in ozon_products
+                        )
+                    ),
+                    timeout=COMPARE_TIMEOUT_SECONDS,
                 )
-            )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "Общий таймаут сравнения с Kaspi: %s секунд",
+                    COMPARE_TIMEOUT_SECONDS,
+                )
+                results = []
         finally:
             if context_token is not None:
                 _search_context.reset(context_token)

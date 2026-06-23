@@ -53,8 +53,10 @@ class SeleniumManager:
                    fix_hairline=True)
             
 
-            driver.implicitly_wait(20)
-            driver.set_page_load_timeout(60)
+            driver.implicitly_wait(10)
+            driver.set_page_load_timeout(
+                int(os.getenv("OZON_PAGE_LOAD_TIMEOUT", "30"))
+            )
             
 
             driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
@@ -105,8 +107,10 @@ class SeleniumManager:
                    renderer="Intel Iris OpenGL Engine",
                    fix_hairline=True)
             
-            driver.implicitly_wait(20)
-            driver.set_page_load_timeout(60)
+            driver.implicitly_wait(10)
+            driver.set_page_load_timeout(
+                int(os.getenv("OZON_PAGE_LOAD_TIMEOUT", "30"))
+            )
             
             driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
             
@@ -211,10 +215,14 @@ class SeleniumManager:
             logger.error(f"Ошибка извлечения JSON из HTML: {e}")
             return None
     
-    def _wait_for_antibot_bypass(self, max_wait_time: int = 240):   # ⬅️ 120 → 240
+    def _wait_for_antibot_bypass(self, max_wait_time: int = None):
+        if max_wait_time is None:
+            max_wait_time = int(
+                os.getenv("OZON_ANTIBOT_TIMEOUT", "45")
+            )
         start_time = time.time()
         reload_attempts = 0
-        max_reload_attempts = 3
+        max_reload_attempts = 2
 
         while time.time() - start_time < max_wait_time:
             try:
@@ -226,7 +234,7 @@ class SeleniumManager:
                         )
                         self.driver.refresh()
                         reload_attempts += 1
-                        time.sleep(15)      
+                        time.sleep(5)
                         continue
                     else:
                         logger.warning("Превышено кол-во попыток, возвращаем новый драйвер")
@@ -237,7 +245,7 @@ class SeleniumManager:
             except Exception as e:
                 if "Access blocked" in str(e):
                     raise
-                time.sleep(15)  
+                time.sleep(5)
                 continue
 
         logger.warning(f"Антибот защита не пройдена за {max_wait_time} секунд")

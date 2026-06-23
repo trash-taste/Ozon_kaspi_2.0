@@ -1,6 +1,7 @@
 
 import logging
 import json
+import os
 import re
 import time
 import concurrent.futures
@@ -81,7 +82,7 @@ class ProductWorker:
         return results
     
     def _parse_single_product(self, article: str, product_url: str) -> ProductInfo:
-        max_retries = 2
+        max_retries = 1
         
         for attempt in range(max_retries):
             try:
@@ -94,7 +95,7 @@ class ProductWorker:
                         continue
                     return ProductInfo(article=article, error="Не удалось загрузить карточку товара")
 
-                WebDriverWait(self.driver, 15).until(
+                WebDriverWait(self.driver, 10).until(
                     lambda driver: driver.find_elements(By.CSS_SELECTOR, "h1")
                 )
 
@@ -349,8 +350,16 @@ class OzonProductParser:
         else:
             allocated_workers = self._calculate_optimal_workers(len(articles))
 
-        # Несколько параллельных Chrome-сессий быстро вызывают блокировку Ozon.
-        allocated_workers = 1
+        worker_limit = max(
+            1,
+            int(os.getenv("OZON_PRODUCT_WORKERS", "2")),
+        )
+        allocated_workers = min(
+            allocated_workers,
+            self.max_workers,
+            worker_limit,
+            len(articles),
+        )
         
         logger.info(f"Начало парсинга {len(articles)} товаров с {allocated_workers} воркерами для пользователя {self.user_id}")
         

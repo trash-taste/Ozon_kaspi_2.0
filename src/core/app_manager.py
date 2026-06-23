@@ -140,6 +140,21 @@ class AppManager:
             
             # Принудительно закрываем все воркеры продуктов перед началом парсинга продавцов
             product_parser.cleanup()
+
+            parsed_products = len(
+                [product for product in product_results if product.success]
+            )
+            logger.info(
+                "Обработка карточек завершена: успешно=%s, ошибок=%s",
+                parsed_products,
+                len(product_results) - parsed_products,
+            )
+            self._notify_user(
+                user_id,
+                "Обработка карточек завершена: "
+                f"{parsed_products}/{len(product_results)} успешно. "
+                "Продолжаю подготовку отчета.",
+            )
             
             if self.stop_event.is_set():
                 return
@@ -165,6 +180,11 @@ class AppManager:
                 
                 if unique_seller_ids:
                     logger.info(f"Начинаем парсинг {len(unique_seller_ids)} продавцов (поля: {selected_fields})")
+                    self._notify_user(
+                        user_id,
+                        "Проверяю дополнительные данные продавцов: "
+                        f"{len(unique_seller_ids)}.",
+                    )
                     seller_parser = OzonSellerParser(self.settings.MAX_WORKERS, user_id, headless=self.settings.HEADLESS)
                     seller_results = seller_parser.parse_sellers(unique_seller_ids)
                     logger.info(f"✓ Парсинг селлеров завершен. Получено: {len(seller_results)}, успешных: {len([s for s in seller_results if s.success])}")
@@ -219,7 +239,13 @@ class AppManager:
             self.last_results = user_results
             
             self._save_results_to_file(user_id)
-            self._export_to_excel(user_id)
+            excel_sent = self._export_to_excel(user_id)
+            if self.telegram_bot and user_id and not excel_sent:
+                self._notify_user(
+                    user_id,
+                    "Excel создать или отправить в Telegram не удалось. "
+                    "Проверьте logs и папку output.",
+                )
             if self.telegram_bot and user_id:
                 self._compare_with_kaspi_and_send(user_id)
             if self.telegram_bot and user_id:
@@ -308,7 +334,7 @@ class AppManager:
         except Exception as e:
             logger.error(f"Ошибка сохранения результатов: {e}")
     
-    def _export_to_excel(self, user_id: str = None):
+    def _export_to_excel(self, user_id: str = None) -> bool:
         try:
             # Получаем результаты для конкретного пользователя
             results = self.user_results.get(user_id, self.last_results) if user_id else self.last_results
@@ -363,11 +389,25 @@ class AppManager:
                     'error': product.error
                 })
             
-            if exporter.export_results(export_data, selected_fields) and self.telegram_bot and user_id:
-                self._send_files_to_telegram(str(exporter.filepath), user_id)
+            if not exporter.export_results(export_data, selected_fields):
+                return False
+
+            file_size = exporter.filepath.stat().st_size
+            logger.info(
+                "Excel готов к отправке: path=%s size=%s bytes",
+                exporter.filepath.resolve(),
+                file_size,
+            )
+            if self.telegram_bot and user_id:
+                return self._send_files_to_telegram(
+                    str(exporter.filepath),
+                    user_id,
+                )
+            return True
             
         except Exception as e:
-            logger.error(f"Ошибка экспорта в Excel: {e}")
+            logger.exception("Ошибка экспорта в Excel: %s", e)
+            return False
 
     def _build_ozon_products_for_comparison(
         self,
@@ -519,15 +559,18 @@ class AppManager:
             logger.error(f"Ошибка уведомления пользователя {user_id}: {e}")
     
     def _send_report_to_telegram(self, user_id: str = None):
-        self._send_via_temp_bot(report_only=True, target_user_id=user_id)
+        return self._send_via_temp_bot(
+            report_only=True,
+            target_user_id=user_id,
+        )
     
     def _send_files_to_telegram(
         self,
         excel_path: str,
         user_id: str = None,
         caption: str = None,
-    ):
-        self._send_via_temp_bot(
+    ) -> bool:
+        return self._send_via_temp_bot(
             excel_path=excel_path,
             target_user_id=user_id,
             caption=caption,
@@ -539,15 +582,21 @@ class AppManager:
         report_only: bool = False,
         target_user_id: str = None,
         caption: str = None,
-    ):
+    ) -> bool:
         try:
             from ..utils.config_loader import load_telegram_config
+            from pathlib import Path
             
-            bot_token, config_user_ids = load_telegram_config()
+            config_token, config_user_ids = load_telegram_config()
+            bot_token = getattr(
+                self.telegram_bot,
+                "bot_token",
+                None,
+            ) or config_token
             
             if not bot_token:
                 logger.error("Нет TELEGRAM_BOT_TOKEN в config.txt")
-                return
+                return False
             
             # Определяем целевого пользователя
             if target_user_id:
@@ -557,14 +606,31 @@ class AppManager:
                 # Отправляем всем пользователям из конфига (для обратной совместимости)
                 if not config_user_ids:
                     logger.error("Нет TELEGRAM_CHAT_ID в config.txt")
-                    return
+                    return False
                 target_users = config_user_ids.split(',') if isinstance(config_user_ids, str) else [config_user_ids]
+
+            if excel_path:
+                report_file = Path(excel_path)
+                if not report_file.is_file():
+                    logger.error(
+                        "Excel-файл для отправки не найден: %s",
+                        report_file.resolve(),
+                    )
+                    return False
+                logger.info(
+                    "Отправка Excel в Telegram: path=%s size=%s "
+                    "user=%s",
+                    report_file.resolve(),
+                    report_file.stat().st_size,
+                    target_user_id,
+                )
             
             from aiogram import Bot
             from aiogram.types import FSInputFile
             
             async def send_files():
                 temp_bot = Bot(token=bot_token)
+                sent = True
                 
                 try:
                     for target_user in target_users:
@@ -620,18 +686,25 @@ class AppManager:
                                 caption=document_caption,
                                 parse_mode="HTML" if not caption else None,
                             )
-                    
-                    if excel_path:
-                        await asyncio.sleep(10)
-                        self._delete_output_folder()
+                            logger.info(
+                                "Excel успешно отправлен в Telegram: "
+                                "path=%s user=%s",
+                                excel_path,
+                                target_user,
+                            )
                         
                 finally:
                     await temp_bot.session.close()
+                return sent
             
-            asyncio.run(send_files())
+            return asyncio.run(send_files())
             
         except Exception as e:
-            logger.error(f"Ошибка отправки через временный бот: {e}")
+            logger.exception(
+                "Ошибка отправки через временный бот: %s",
+                e,
+            )
+            return False
     
     def _delete_output_folder(self):
         try:

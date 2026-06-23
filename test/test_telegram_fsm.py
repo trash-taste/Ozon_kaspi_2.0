@@ -1,6 +1,6 @@
 import unittest
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from src.core.app_manager import AppManager
 from src.telegram.bot_manager import ScanStates, TelegramBotManager
@@ -153,6 +153,37 @@ class TelegramKaspiIntegrationTests(unittest.TestCase):
         send_args = app_manager._send_files_to_telegram.call_args
         self.assertEqual(send_args.args[:2], ("/tmp/arbitrage.xlsx", "123"))
         self.assertIn("Подходящих товаров: 1", send_args.kwargs["caption"])
+
+    def test_excel_export_returns_telegram_send_result(self):
+        app_manager = AppManager.__new__(AppManager)
+        app_manager.settings = SimpleNamespace(
+            OUTPUT_DIR=MagicMock()
+        )
+        app_manager.telegram_bot = SimpleNamespace(bot_token="token")
+        app_manager.last_results = {}
+        app_manager.user_results = {
+            "123": {
+                "output_folder": "test",
+                "selected_fields": ["name"],
+                "links": {},
+                "products": [],
+                "seller_data": {},
+            }
+        }
+        app_manager._send_files_to_telegram = Mock(return_value=True)
+        exporter = MagicMock()
+        exporter.export_results.return_value = True
+        exporter.filepath.stat.return_value.st_size = 128
+        exporter.filepath.resolve.return_value = "/tmp/report.xlsx"
+
+        with patch(
+            "src.core.app_manager.ExcelExporter",
+            return_value=exporter,
+        ):
+            result = app_manager._export_to_excel("123")
+
+        self.assertTrue(result)
+        app_manager._send_files_to_telegram.assert_called_once()
 
 
 if __name__ == "__main__":

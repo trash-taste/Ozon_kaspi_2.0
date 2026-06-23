@@ -11,6 +11,12 @@ services:
       TZ: Asia/Qyzylorda
       CHROME_BIN: /usr/bin/chromium
       PYTHONUNBUFFERED: "1"
+      OZON_PAGE_LOAD_TIMEOUT: "30"
+      OZON_ANTIBOT_TIMEOUT: "45"
+      OZON_PRODUCT_WORKERS: "2"
+      OZON_SELLER_WORKERS: "2"
+      KASPI_REQUEST_TIMEOUT: "12"
+      KASPI_COMPARE_TIMEOUT: "180"
     volumes:
       - ./config.txt:/app/config.txt
       - ./output:/app/output

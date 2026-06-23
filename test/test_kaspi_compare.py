@@ -248,6 +248,34 @@ class KaspiAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cards, [{"id": "1"}])
         self.assertEqual(session.calls, 3)
 
+    async def test_compare_timeout_returns_empty_report_data(self):
+        product = {
+            "title": "Test product",
+            "price": 10000,
+            "url": "ozon-1",
+            "brand": None,
+            "article": None,
+            "category": None,
+        }
+
+        async def slow_compare(*args, **kwargs):
+            await asyncio.sleep(1)
+            return False, None
+
+        with (
+            patch(
+                "services.kaspi_compare._compare_one",
+                side_effect=slow_compare,
+            ),
+            patch(
+                "services.kaspi_compare.COMPARE_TIMEOUT_SECONDS",
+                0.01,
+            ),
+        ):
+            results = await kaspi_compare.compare_with_kaspi([product])
+
+        self.assertEqual(results, [])
+
     async def test_compare_filters_and_sorts_results(self):
         products = [
             {

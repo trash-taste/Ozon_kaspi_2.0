@@ -1,5 +1,6 @@
 import logging
 import json
+import os
 import re
 import time
 import concurrent.futures
@@ -62,7 +63,7 @@ class SellerWorker:
         return results
 
     def _parse_single_seller(self, seller_id: str) -> SellerInfo:
-        max_retries = 3
+        max_retries = 1
 
         for attempt in range(max_retries):
             try:
@@ -74,7 +75,9 @@ class SellerWorker:
                         continue
                     return SellerInfo(seller_id=seller_id, error="Не удалось загрузить страницу API")
 
-                json_content = self.selenium_manager.wait_for_json_response(timeout=30)
+                json_content = self.selenium_manager.wait_for_json_response(
+                    timeout=15
+                )
 
                 if not json_content:
                     if attempt < max_retries - 1:
@@ -426,6 +429,17 @@ class OzonSellerParser:
             )
         else:
             allocated_workers = self._calculate_optimal_workers(len(unique_seller_ids))
+
+        worker_limit = max(
+            1,
+            int(os.getenv("OZON_SELLER_WORKERS", "2")),
+        )
+        allocated_workers = min(
+            allocated_workers,
+            self.max_workers,
+            worker_limit,
+            len(unique_seller_ids),
+        )
 
         logger.info(f"Начало парсинга {len(unique_seller_ids)} продавцов с {allocated_workers} воркерами для пользователя {self.user_id}")
 
