@@ -1,4 +1,3 @@
-import html
 import json
 import logging
 import os
@@ -7,7 +6,6 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Tuple
-from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
@@ -15,6 +13,11 @@ from selenium.webdriver.support.ui import WebDriverWait
 
 from ..utils.resource_manager import resource_manager
 from ..utils.selenium_manager import SeleniumManager
+from .ozon_listing_data import (
+    extract_listing_items_from_html,
+    extract_product_links_from_html,
+    normalize_product_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -218,8 +221,8 @@ class OzonLinkParser:
         page_title = getattr(self.driver, "title", "") or ""
 
         self._add_product_link(items, current_url, page_title)
-        for href in self._extract_product_links_from_html():
-            self._add_product_link(items, href, "")
+        for url, payload in self._extract_product_items_from_html().items():
+            self._merge_product_payload(items, url, payload)
 
         if not items:
             logger.warning(
@@ -313,8 +316,8 @@ class OzonLinkParser:
                 )
 
             if len(items) < self.max_products:
-                for href in self._extract_product_links_from_html():
-                    self._add_product_link(items, href, "")
+                for url, payload in self._extract_product_items_from_html().items():
+                    self._merge_product_payload(items, url, payload)
 
             logger.debug(f"Извлечено ссылок на текущем экране: {len(items)}")
             return items
@@ -329,20 +332,14 @@ class OzonLinkParser:
             return None
 
     def _extract_product_links_from_html(self):
-        page_source = html.unescape(self.driver.page_source)
-        page_source = unquote(page_source)
-        page_source = (
-            page_source
-            .replace("\\u002F", "/")
-            .replace("\\/", "/")
-            .replace("\\u0026", "&")
+        return extract_product_links_from_html(self.driver.page_source)
+
+    def _extract_product_items_from_html(self) -> Dict[str, dict[str, Any]]:
+        current_url = getattr(self.driver, "current_url", "") or ""
+        return extract_listing_items_from_html(
+            self.driver.page_source,
+            current_url or self.category_url,
         )
-        pattern = (
-            r'(?:https?:)?//(?:www\.)?ozon\.(?:ru|kz)/product/'
-            r'[^"\'<>\s\\]+'
-            r'|/product/[^"\'<>\s\\]+'
-        )
-        return re.findall(pattern, page_source)
 
     def _add_product_link(
         self,
@@ -357,6 +354,27 @@ class OzonLinkParser:
             "title": self._extract_title_from_card_text(card_text),
             "price": self._extract_price_from_card_text(card_text),
         }
+
+    def _merge_product_payload(
+        self,
+        items: Dict[str, dict[str, Any]],
+        url: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if not url:
+            return
+        if url not in items:
+            items[url] = dict(payload or {})
+            return
+
+        current = items[url]
+        if not isinstance(current, dict):
+            items[url] = dict(payload or {})
+            return
+
+        for key in ("title", "price", "image_url"):
+            if not current.get(key) and payload.get(key):
+                current[key] = payload[key]
 
     def _extract_title_from_card_text(self, card_text: str) -> str:
         lines = [
@@ -417,41 +435,8 @@ class OzonLinkParser:
         if not href:
             return ""
 
-        href = (
-            html.unescape(href)
-            .replace("\\u002F", "/")
-            .replace("\\/", "/")
-            .strip()
-        )
-        if href.startswith("//"):
-            href = "https:" + href
-        elif href.startswith("/"):
-            current_url = getattr(self.driver, "current_url", "") or ""
-            href = urljoin(current_url or "https://www.ozon.ru", href)
-
-        try:
-            parsed = urlsplit(href)
-        except ValueError:
-            return ""
-
-        host = (parsed.hostname or "").casefold()
-        if host not in {"ozon.ru", "www.ozon.ru", "ozon.kz", "www.ozon.kz"}:
-            return ""
-        if not re.fullmatch(
-            r"/product/(?:[^/]+-)?\d+/?",
-            parsed.path,
-        ):
-            return ""
-
-        return urlunsplit(
-            (
-                parsed.scheme or "https",
-                parsed.netloc,
-                parsed.path,
-                "",
-                "",
-            )
-        )
+        current_url = getattr(self.driver, "current_url", "") or ""
+        return normalize_product_url(href, current_url or self.category_url)
 
     def _save_debug_snapshot(self, reason: str = "debug"):
         try:

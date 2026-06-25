@@ -1,4 +1,3 @@
-import html
 import json
 import logging
 import os
@@ -7,9 +6,13 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Tuple
-from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
 from ..utils.resource_manager import resource_manager
+from .ozon_listing_data import (
+    extract_listing_items_from_html,
+    extract_product_links_from_html,
+    normalize_product_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +114,7 @@ class OzonPlaywrightParser:
                         "Playwright: таймаут загрузки, пробуем текущий DOM"
                     )
 
+                self._wait_for_short_redirect(page)
                 self._wait_for_unblocked_page(page)
                 self._collect_links(page)
                 self._save_links()
@@ -151,6 +155,18 @@ class OzonPlaywrightParser:
             time.sleep(5)
 
         logger.warning("Playwright: антибот не пройден за %s секунд", max_wait)
+
+    def _wait_for_short_redirect(self, page) -> None:
+        for _ in range(12):
+            current_url = getattr(page, "url", "") or ""
+            if not re.search(r"/t/[^/?#]+", current_url):
+                return
+            page.wait_for_timeout(1000)
+
+        logger.warning(
+            "Playwright: короткая ссылка Ozon не отдала редирект: %s",
+            getattr(page, "url", ""),
+        )
 
     def _collect_links(self, page) -> None:
         idle_scrolls = 0
@@ -232,8 +248,12 @@ class OzonPlaywrightParser:
         except Exception as exc:
             logger.debug("Playwright: DOM extract failed: %s", exc)
 
-        for href in self._extract_product_links_from_html(page.content()):
-            self._add_product_link(items, href, "", getattr(page, "url", ""))
+        if len(items) < self.max_products:
+            for url, payload in extract_listing_items_from_html(
+                page.content(),
+                getattr(page, "url", "") or self.category_url,
+            ).items():
+                self._merge_product_payload(items, url, payload)
 
         return items
 
@@ -286,56 +306,27 @@ class OzonPlaywrightParser:
         }
 
     def _extract_product_links_from_html(self, page_source: str) -> list[str]:
-        source = html.unescape(page_source or "")
-        source = unquote(source)
-        source = (
-            source
-            .replace("\\u002F", "/")
-            .replace("\\/", "/")
-            .replace("\\u0026", "&")
-        )
-        pattern = (
-            r'(?:https?:)?//(?:www\.)?ozon\.(?:ru|kz)/product/'
-            r'[^"\'<>\s\\]+'
-            r'|/product/[^"\'<>\s\\]+'
-        )
-        return re.findall(pattern, source)
+        return extract_product_links_from_html(page_source)
 
     def _normalize_product_url(self, href: str, base_url: str = "") -> str:
-        if not href:
-            return ""
+        return normalize_product_url(href, base_url or self.category_url)
 
-        href = (
-            html.unescape(href)
-            .replace("\\u002F", "/")
-            .replace("\\/", "/")
-            .strip()
-        )
-        if href.startswith("//"):
-            href = "https:" + href
-        elif href.startswith("/"):
-            href = urljoin(base_url or self.category_url, href)
+    def _merge_product_payload(
+        self,
+        items: Dict[str, dict[str, Any]],
+        url: str,
+        payload: dict[str, Any],
+    ) -> None:
+        if not url:
+            return
+        if url not in items:
+            items[url] = dict(payload or {})
+            return
 
-        try:
-            parsed = urlsplit(href)
-        except ValueError:
-            return ""
-
-        host = (parsed.hostname or "").casefold()
-        if host not in {"ozon.ru", "www.ozon.ru", "ozon.kz", "www.ozon.kz"}:
-            return ""
-        if not re.fullmatch(r"/product/(?:[^/]+-)?\d+/?", parsed.path):
-            return ""
-
-        return urlunsplit(
-            (
-                parsed.scheme or "https",
-                parsed.netloc,
-                parsed.path,
-                "",
-                "",
-            )
-        )
+        current = items[url]
+        for key in ("title", "price", "image_url"):
+            if not current.get(key) and payload.get(key):
+                current[key] = payload[key]
 
     def _extract_title_from_card_text(self, card_text: str) -> str:
         lines = [

@@ -102,6 +102,32 @@ class OzonProductURLTests(unittest.TestCase):
             ["https://ozon.kz/product/redmond-rmc-m52-4103859568/"],
         )
 
+    def test_extracts_listing_metadata_from_embedded_json(self):
+        self.parser.driver = SimpleNamespace(
+            current_url="https://ozon.kz/category/test-123/",
+            page_source=r'''
+            <script>
+            window.__data = {
+              "items": [{
+                "link": "https:\/\/ozon.kz\/product\/redmond-rmc-m52-4103859568\/",
+                "title": "Мультиварка REDMOND RMC-M52, черная",
+                "cardPrice": "34 990 ₸"
+              }]
+            };
+            </script>
+            ''',
+        )
+
+        self.assertEqual(
+            self.parser._extract_product_items_from_html(),
+            {
+                "https://ozon.kz/product/redmond-rmc-m52-4103859568/": {
+                    "title": "Мультиварка REDMOND RMC-M52, черная",
+                    "price": 34990,
+                }
+            },
+        )
+
     def test_playwright_parser_normalizes_relative_product_url(self):
         parser = OzonPlaywrightParser(
             "https://ozon.kz/category/test-123/",
