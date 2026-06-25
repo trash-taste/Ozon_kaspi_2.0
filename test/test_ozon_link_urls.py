@@ -4,6 +4,8 @@ from unittest.mock import patch
 
 from src.parsers.link_parser import OzonLinkParser
 from src.parsers.product_parser import (
+    ProductInfo,
+    ProductWorker,
     OzonProductParser,
     extract_product_page_fallback,
 )
@@ -48,6 +50,23 @@ class OzonProductURLTests(unittest.TestCase):
             "",
         )
 
+    def test_extracts_title_and_price_from_category_card_text(self):
+        card_text = """
+        Мультиварка REDMOND RMC-M52, черная
+        34 990 ₸
+        4.9 • 120 отзывов
+        В корзину
+        """
+
+        self.assertEqual(
+            self.parser._extract_title_from_card_text(card_text),
+            "Мультиварка REDMOND RMC-M52, черная",
+        )
+        self.assertEqual(
+            self.parser._extract_price_from_card_text(card_text),
+            34990,
+        )
+
 
 class OzonProductWorkerTests(unittest.TestCase):
     def test_extracts_title_price_and_image_from_json_ld(self):
@@ -77,6 +96,59 @@ class OzonProductWorkerTests(unittest.TestCase):
             result["image_url"],
             "https://img.test/item.jpg",
         )
+
+    def test_extracts_title_and_price_from_ozon_widget_state(self):
+        html = r'''
+        <html><body>
+          <script>
+          window.__ozon = {
+            "webProductHeading-123-default-1":"{\"title\":\"REDMOND RMC-M52 мультиварка\"}",
+            "webPrice-123-default-1":"{\"cardPrice\":\"34 990 ₸\",\"originalPrice\":\"39 990 ₸\"}"
+          };
+          </script>
+        </body></html>
+        '''
+
+        result = extract_product_page_fallback(html)
+
+        self.assertEqual(result["title"], "REDMOND RMC-M52 мультиварка")
+        self.assertEqual(result["prices"], [34990, 39990])
+
+    def test_product_worker_uses_category_metadata_when_card_parse_fails(self):
+        worker = ProductWorker(1)
+        product = worker._build_from_link_metadata(
+            "4103859568",
+            {
+                "title": "REDMOND RMC-M52 мультиварка",
+                "price": 34990,
+                "image_url": "https://img.test/item.jpg",
+            },
+            "Не удалось загрузить карточку товара",
+        )
+
+        self.assertTrue(product.success)
+        self.assertEqual(product.name, "REDMOND RMC-M52 мультиварка")
+        self.assertEqual(product.price, 34990)
+        self.assertEqual(product.image_url, "https://img.test/item.jpg")
+
+    def test_product_worker_replaces_generic_ozon_title_from_metadata(self):
+        worker = ProductWorker(1)
+        product = ProductInfo(
+            article="4103859568",
+            name="Ozon интернет-магазин",
+            price=34990,
+        )
+
+        worker._apply_link_metadata(
+            product,
+            {
+                "title": "REDMOND RMC-M52 мультиварка",
+                "price": 34990,
+            },
+        )
+
+        self.assertEqual(product.name, "REDMOND RMC-M52 мультиварка")
+        self.assertTrue(product.success)
 
     def test_uses_at_most_two_product_workers_by_default(self):
         parser = OzonProductParser(max_workers=10, user_id="123")

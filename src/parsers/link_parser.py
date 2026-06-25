@@ -1,11 +1,12 @@
 import html
 import json
 import logging
+import os
 import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, Tuple
 from urllib.parse import urljoin, urlsplit, urlunsplit
 
 from selenium.common.exceptions import TimeoutException
@@ -31,7 +32,7 @@ class OzonLinkParser:
         self.user_id = user_id
         self.selenium_manager = SeleniumManager(headless=headless)
         self.driver = None
-        self.collected_links = {}
+        self.collected_links: Dict[str, dict[str, Any]] = {}
 
         self.category_name = self._extract_category_name(category_url)
         self.timestamp = datetime.now().strftime("%d.%m.%Y_%H-%M-%S")
@@ -50,7 +51,7 @@ class OzonLinkParser:
         except Exception:
             return "unknown_category"
 
-    def start_parsing(self) -> Tuple[bool, Dict[str, str]]:
+    def start_parsing(self) -> Tuple[bool, Dict[str, dict[str, Any]]]:
         try:
             if self.user_id:
                 resource_manager.start_parsing_session(
@@ -156,6 +157,14 @@ class OzonLinkParser:
         seen_urls = set()
         scroll_num = 0
         no_new_items_count = 0
+        no_new_limit = max(
+            3,
+            int(os.getenv("OZON_LINK_IDLE_SCROLLS", "6")),
+        )
+        scroll_wait = max(
+            1,
+            int(os.getenv("OZON_SCROLL_WAIT_SECONDS", "4")),
+        )
 
         while len(self.collected_links) < self.max_products:
             scroll_num += 1
@@ -175,7 +184,7 @@ class OzonLinkParser:
 
             if new_count == 0:
                 no_new_items_count += 1
-                if no_new_items_count >= 3:
+                if no_new_items_count >= no_new_limit:
                     break
             else:
                 no_new_items_count = 0
@@ -183,15 +192,44 @@ class OzonLinkParser:
             if len(self.collected_links) >= self.max_products:
                 break
 
-            self.driver.execute_script(
-                "window.scrollTo(0, document.body.scrollHeight);"
-            )
-            time.sleep(8)
+            self._scroll_for_more()
+            time.sleep(scroll_wait)
 
         if not self.collected_links:
             self._save_debug_snapshot()
 
-    def _extract_all_links(self) -> Dict[str, str]:
+    def _scroll_for_more(self):
+        try:
+            self.driver.execute_script(
+                """
+                const paginator = document.getElementById(
+                    'contentScrollPaginator'
+                );
+                if (paginator) {
+                    paginator.scrollIntoView({
+                        behavior: 'instant',
+                        block: 'end'
+                    });
+                }
+                const step = Math.max(
+                    Math.floor(window.innerHeight * 0.9),
+                    800
+                );
+                window.scrollBy(0, step);
+                window.dispatchEvent(new Event('scroll', {bubbles: true}));
+                document.dispatchEvent(
+                    new WheelEvent('wheel', {
+                        deltaY: step,
+                        bubbles: true,
+                        cancelable: true
+                    })
+                );
+                """
+            )
+        except Exception as e:
+            logger.debug("Не удалось выполнить JS-scroll: %s", e)
+
+    def _extract_all_links(self) -> Dict[str, dict[str, Any]]:
         try:
             items = {}
             dom_items = self.driver.execute_script(
@@ -204,6 +242,13 @@ class OzonLinkParser:
                     ) || link.parentElement;
                     const img = link.querySelector('img')
                         || (card ? card.querySelector('img') : null);
+                    const text = [
+                        link.getAttribute('aria-label') || '',
+                        link.getAttribute('title') || '',
+                        img ? (img.getAttribute('alt') || '') : '',
+                        link.innerText || link.textContent || '',
+                        card ? (card.innerText || card.textContent || '') : ''
+                    ].filter(Boolean).join('\\n');
                     return {
                         href: link.href || link.getAttribute('href') || '',
                         image: img
@@ -215,6 +260,8 @@ class OzonLinkParser:
                                 || ''
                             )
                             : ''
+                            ,
+                        text: text
                     };
                 });
                 """
@@ -224,11 +271,12 @@ class OzonLinkParser:
                     items,
                     item.get("href", ""),
                     item.get("image", ""),
+                    item.get("text", ""),
                 )
 
             if len(items) < self.max_products:
                 for href in self._extract_product_links_from_html():
-                    self._add_product_link(items, href, "")
+                    self._add_product_link(items, href, "", "")
 
             logger.debug(f"Извлечено ссылок на текущем экране: {len(items)}")
             return items
@@ -309,12 +357,75 @@ class OzonLinkParser:
         return re.findall(pattern, page_source)
 
     def _add_product_link(
-        self, items: Dict[str, str], href: str, img_url: str
+        self,
+        items: Dict[str, dict[str, Any]],
+        href: str,
+        img_url: str,
+        card_text: str = "",
     ):
         normalized = self._normalize_product_url(href)
         if not normalized or normalized in items:
             return
-        items[normalized] = self._normalize_image_url(img_url)
+        items[normalized] = {
+            "image_url": self._normalize_image_url(img_url),
+            "title": self._extract_title_from_card_text(card_text),
+            "price": self._extract_price_from_card_text(card_text),
+        }
+
+    def _extract_title_from_card_text(self, card_text: str) -> str:
+        lines = [
+            re.sub(r"\s+", " ", line).strip()
+            for line in (card_text or "").splitlines()
+        ]
+        ignored_markers = (
+            "₸",
+            "₽",
+            "тг",
+            "тенге",
+            "%",
+            "звезд",
+            "отзыв",
+            "балл",
+            "рассроч",
+            "достав",
+            "в корзин",
+            "осталось",
+            "купить",
+            "рейтинг",
+            "seller",
+        )
+        candidates = []
+        for line in lines:
+            lowered = line.casefold()
+            if len(line) < 5 or len(line) > 260:
+                continue
+            if not re.search(r"[A-Za-zА-Яа-я]", line):
+                continue
+            if any(marker in lowered for marker in ignored_markers):
+                continue
+            candidates.append(line)
+
+        if not candidates:
+            return ""
+
+        return max(candidates, key=len)
+
+    def _extract_price_from_card_text(self, card_text: str) -> int:
+        values = []
+        patterns = (
+            r"(\d[\d\s\u00a0\u202f.,]{1,})\s*(?:₸|тг|тенге)",
+            r"(?:₸|тг|тенге)\s*(\d[\d\s\u00a0\u202f.,]{1,})",
+        )
+        for pattern in patterns:
+            for match in re.finditer(pattern, card_text or "", re.IGNORECASE):
+                cleaned = re.sub(r"[^\d]", "", match.group(1))
+                if not cleaned:
+                    continue
+                value = int(cleaned)
+                if 100 <= value <= 10_000_000 and value not in values:
+                    values.append(value)
+
+        return values[0] if values else 0
 
     def _normalize_product_url(self, href: str) -> str:
         if not href:

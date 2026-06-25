@@ -6,7 +6,7 @@ import re
 import time
 import concurrent.futures
 from html import unescape
-from typing import List, Dict, Optional, Tuple
+from typing import Any, List, Dict, Optional, Tuple
 from dataclasses import dataclass
 from bs4 import BeautifulSoup
 from selenium.webdriver.common.by import By
@@ -15,6 +15,158 @@ from ..utils.selenium_manager import SeleniumManager
 from ..utils.resource_manager import resource_manager
 
 logger = logging.getLogger(__name__)
+
+
+def _decode_ozon_json_string(value: str) -> Optional[Dict[str, Any]]:
+    text = unescape(value or "").strip()
+    for _ in range(4):
+        if not text:
+            return None
+
+        candidates = [text]
+        if '\\"' in text:
+            candidates.append(text.replace('\\"', '"'))
+
+        for candidate in candidates:
+            try:
+                decoded = json.loads(candidate)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            return decoded if isinstance(decoded, dict) else None
+
+        try:
+            decoded_text = json.loads(f'"{text}"')
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if decoded_text == text:
+            return None
+        text = unescape(decoded_text).strip()
+    return None
+
+
+def _walk_json_values(value: Any):
+    if isinstance(value, dict):
+        yield value
+        for child in value.values():
+            yield from _walk_json_values(child)
+    elif isinstance(value, list):
+        for child in value:
+            yield from _walk_json_values(child)
+
+
+def _looks_like_product_title(value: str) -> bool:
+    text = re.sub(r"\s+", " ", value or "").strip()
+    lowered = text.casefold()
+    if len(text) < 5 or len(text) > 300:
+        return False
+    if not re.search(r"[A-Za-zА-Яа-я]", text):
+        return False
+    blocked = (
+        "ozon",
+        "в корзин",
+        "купить",
+        "доставка",
+        "отзывы",
+        "рейтинг",
+        "характеристики",
+        "описание",
+    )
+    return not any(marker in lowered for marker in blocked)
+
+
+def _extract_titles_from_json(value: Any) -> List[str]:
+    titles = []
+    for item in _walk_json_values(value):
+        for key in ("title", "name", "productName", "heading"):
+            raw = item.get(key)
+            if isinstance(raw, str):
+                title = re.sub(r"\s+", " ", unescape(raw)).strip()
+                if _looks_like_product_title(title) and title not in titles:
+                    titles.append(title)
+        text_atom = item.get("textAtom")
+        if isinstance(text_atom, dict):
+            raw = text_atom.get("text")
+            if isinstance(raw, str):
+                title = re.sub(r"\s+", " ", unescape(raw)).strip()
+                if _looks_like_product_title(title) and title not in titles:
+                    titles.append(title)
+    return titles
+
+
+def _extract_price_number(value: Any) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, (int, float)):
+        price = int(value)
+        return price if 100 <= price <= 10_000_000 else 0
+    cleaned = re.sub(r"[^\d]", "", str(value))
+    if not cleaned:
+        return 0
+    price = int(cleaned)
+    return price if 100 <= price <= 10_000_000 else 0
+
+
+def _extract_prices_from_json(value: Any) -> List[int]:
+    prices = []
+
+    def add_price(raw: Any):
+        if isinstance(raw, (dict, list)):
+            for nested_price in _extract_prices_from_json(raw):
+                if nested_price not in prices:
+                    prices.append(nested_price)
+            return
+        price = _extract_price_number(raw)
+        if price and price not in prices:
+            prices.append(price)
+
+    preferred_keys = (
+        "cardPrice",
+        "price",
+        "finalPrice",
+        "currentPrice",
+        "salePrice",
+        "discountPrice",
+        "lowPrice",
+        "originalPrice",
+        "oldPrice",
+    )
+
+    for item in _walk_json_values(value):
+        for key in preferred_keys:
+            if key in item:
+                add_price(item.get(key))
+        for key, raw in item.items():
+            if "price" in str(key).casefold():
+                add_price(raw)
+
+    if isinstance(value, str):
+        for match in re.finditer(
+            r"(\d[\d\s\u00a0\u202f.,]{1,})\s*(?:₸|тг|тенге)",
+            value,
+            re.IGNORECASE,
+        ):
+            add_price(match.group(1))
+
+    return prices
+
+
+def _extract_ozon_widget_payloads(page_source: str) -> List[Tuple[str, Dict[str, Any]]]:
+    source = (
+        unescape(page_source or "")
+        .replace("\\u002F", "/")
+        .replace("\\/", "/")
+    )
+    payloads: List[Tuple[str, Dict[str, Any]]] = []
+    pattern = re.compile(
+        r'"(?P<key>web(?:ProductHeading|StickyProducts|Price)[^"]*)"\s*:\s*"'
+        r'(?P<value>(?:\\.|[^"\\])*)"',
+        re.DOTALL,
+    )
+    for match in pattern.finditer(source):
+        payload = _decode_ozon_json_string(match.group("value"))
+        if payload:
+            payloads.append((match.group("key"), payload))
+    return payloads
 
 
 def _walk_json_ld_products(value) -> List[Dict]:
@@ -107,6 +259,28 @@ def extract_product_page_fallback(page_source: str) -> Dict[str, object]:
                     if cleaned:
                         prices.append(int(cleaned))
 
+    for key, payload in _extract_ozon_widget_payloads(page_source):
+        if not title and (
+            key.startswith("webProductHeading")
+            or key.startswith("webStickyProducts")
+        ):
+            titles = _extract_titles_from_json(payload)
+            if titles:
+                title = titles[0]
+        if not image_url:
+            for item in _walk_json_values(payload):
+                for image_key in ("coverImageUrl", "imageUrl", "image", "url"):
+                    image_value = item.get(image_key)
+                    if isinstance(image_value, str) and image_value.startswith(
+                        ("http://", "https://", "//")
+                    ):
+                        image_url = image_value
+                        break
+                if image_url:
+                    break
+        if key.startswith("webPrice") or "Price" in key:
+            prices.extend(_extract_prices_from_json(payload))
+
     return {
         "title": re.sub(r"\s+", " ", unescape(title)).strip(),
         "image_url": image_url,
@@ -145,26 +319,30 @@ class ProductWorker:
             logger.error(f"Ошибка инициализации воркера {self.worker_id}: {e}")
             raise
     
-    def parse_products(self, articles: List[str], product_links: Dict[str, str]) -> List[ProductInfo]:
+    def parse_products(self, articles: List[str], product_links: Dict[str, Any]) -> List[ProductInfo]:
         results = []
         
         for article in articles:
             try:
                 # Находим ссылку и изображение для артикула
                 product_url = ""
-                image_from_links = ""
+                link_metadata: Dict[str, Any] = {}
                 
-                for url, img_url in product_links.items():
+                for url, payload in product_links.items():
                     if article in url:
                         product_url = url
-                        image_from_links = img_url
+                        link_metadata = self._normalize_link_metadata(payload)
                         break
                 
-                result = self._parse_single_product(article, product_url)
+                result = self._parse_single_product(
+                    article,
+                    product_url,
+                    link_metadata,
+                )
                 
                 # Используем изображение из ссылок вместо API
-                if result.success and image_from_links:
-                    result.image_url = image_from_links
+                if result.success and link_metadata.get("image_url"):
+                    result.image_url = str(link_metadata["image_url"])
                 
                 results.append(result)
                 
@@ -181,19 +359,33 @@ class ProductWorker:
         
         return results
     
-    def _parse_single_product(self, article: str, product_url: str) -> ProductInfo:
+    def _parse_single_product(
+        self,
+        article: str,
+        product_url: str,
+        link_metadata: Optional[Dict[str, Any]] = None,
+    ) -> ProductInfo:
         max_retries = 1
+        link_metadata = link_metadata or {}
         
         for attempt in range(max_retries):
             try:
                 if not product_url:
-                    return ProductInfo(article=article, error="Не найдена ссылка товара")
+                    return self._build_from_link_metadata(
+                        article,
+                        link_metadata,
+                        "Не найдена ссылка товара",
+                    )
 
                 if not self.selenium_manager.navigate_to_url(product_url):
                     if attempt < max_retries - 1:
                         time.sleep(5)
                         continue
-                    return ProductInfo(article=article, error="Не удалось загрузить карточку товара")
+                    return self._build_from_link_metadata(
+                        article,
+                        link_metadata,
+                        "Не удалось загрузить карточку товара",
+                    )
 
                 WebDriverWait(self.driver, 10).until(
                     lambda driver: (
@@ -207,6 +399,7 @@ class ProductWorker:
                 )
 
                 product_info = self._parse_product_page(article)
+                self._apply_link_metadata(product_info, link_metadata)
                 
                 if product_info.success:
                     return product_info
@@ -214,7 +407,11 @@ class ProductWorker:
                     time.sleep(5)
                     continue
                 else:
-                    return product_info
+                    return self._build_from_link_metadata(
+                        article,
+                        link_metadata,
+                        product_info.error,
+                    )
                     
             except Exception as e:
                 if attempt < max_retries - 1:
@@ -222,9 +419,75 @@ class ProductWorker:
                     time.sleep(5)
                     continue
                 else:
-                    return ProductInfo(article=article, error=f"Ошибка парсинга: {str(e)}")
+                    return self._build_from_link_metadata(
+                        article,
+                        link_metadata,
+                        f"Ошибка парсинга: {str(e)}",
+                    )
         
         return ProductInfo(article=article, error="Превышено количество попыток")
+
+    def _normalize_link_metadata(self, payload: Any) -> Dict[str, Any]:
+        if isinstance(payload, dict):
+            return {
+                "image_url": str(payload.get("image_url") or ""),
+                "title": str(payload.get("title") or ""),
+                "price": _extract_price_number(payload.get("price")),
+            }
+        return {"image_url": str(payload or ""), "title": "", "price": 0}
+
+    def _apply_link_metadata(
+        self,
+        product_info: ProductInfo,
+        metadata: Dict[str, Any],
+    ) -> None:
+        if not metadata:
+            return
+        if (
+            metadata.get("title")
+            and (
+                not product_info.name
+                or self._is_generic_ozon_title(product_info.name)
+            )
+        ):
+            product_info.name = self._fix_text_encoding(
+                str(metadata["title"])
+            )
+        if not product_info.image_url and metadata.get("image_url"):
+            product_info.image_url = str(metadata["image_url"])
+        if not product_info.price and metadata.get("price"):
+            product_info.card_price = int(metadata["price"])
+            product_info.price = int(metadata["price"])
+        if product_info.name and product_info.price:
+            product_info.success = True
+            product_info.error = ""
+
+    def _is_generic_ozon_title(self, value: str) -> bool:
+        text = re.sub(r"\s+", " ", value or "").strip().casefold()
+        if not text:
+            return True
+        generic_markers = (
+            "ozon интернет-магазин",
+            "интернет-магазин ozon",
+            "ozon marketplace",
+            "ozon казахстан",
+        )
+        return any(marker in text for marker in generic_markers)
+
+    def _build_from_link_metadata(
+        self,
+        article: str,
+        metadata: Dict[str, Any],
+        error: str,
+    ) -> ProductInfo:
+        product_info = ProductInfo(article=article, error=error)
+        self._apply_link_metadata(product_info, metadata)
+        if product_info.success:
+            logger.info(
+                "Товар %s восстановлен из данных категории Ozon",
+                article,
+            )
+        return product_info
 
     def _parse_product_page(self, article: str) -> ProductInfo:
         try:
@@ -434,13 +697,7 @@ class ProductWorker:
         return None
     
     def _extract_price_number(self, price_str: str) -> int:
-        if not price_str:
-            return 0
-        try:
-            cleaned = re.sub(r'[^\d]', '', str(price_str))
-            return int(cleaned) if cleaned else 0
-        except:
-            return 0
+        return _extract_price_number(price_str)
     
     def close(self):
         if self.selenium_manager:
