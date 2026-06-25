@@ -67,6 +67,40 @@ class OzonProductURLTests(unittest.TestCase):
             34990,
         )
 
+    def test_recovers_current_product_url_when_category_wait_times_out(self):
+        self.parser.driver = SimpleNamespace(
+            current_url="https://ozon.kz/product/test-product-4103859568/",
+            title="REDMOND RMC-M52",
+            page_source="",
+        )
+
+        self.assertTrue(
+            self.parser._recover_links_from_current_page("test")
+        )
+        self.assertIn(
+            "https://ozon.kz/product/test-product-4103859568/",
+            self.parser.collected_links,
+        )
+        self.assertEqual(
+            self.parser.collected_links[
+                "https://ozon.kz/product/test-product-4103859568/"
+            ]["title"],
+            "REDMOND RMC-M52",
+        )
+
+    def test_extracts_urlencoded_product_links_from_html(self):
+        self.parser.driver = SimpleNamespace(
+            page_source=(
+                "https%3A%2F%2Fozon.kz%2Fproduct%2F"
+                "redmond-rmc-m52-4103859568%2F"
+            )
+        )
+
+        self.assertEqual(
+            self.parser._extract_product_links_from_html(),
+            ["https://ozon.kz/product/redmond-rmc-m52-4103859568/"],
+        )
+
 
 class OzonProductWorkerTests(unittest.TestCase):
     def test_extracts_title_price_and_image_from_json_ld(self):

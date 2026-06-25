@@ -7,7 +7,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Tuple
-from urllib.parse import urljoin, urlsplit, urlunsplit
+from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
 
 from selenium.common.exceptions import TimeoutException
 from selenium.webdriver.common.by import By
@@ -101,6 +101,10 @@ class OzonLinkParser:
                     self.driver = self.selenium_manager.create_driver()
 
                 if not self.selenium_manager.navigate_to_url(self.category_url):
+                    if self._recover_links_from_current_page(
+                        "после неудачной загрузки"
+                    ):
+                        return True
                     if driver_attempt < max_driver_retries - 1:
                         logger.warning(
                             f"Не удалось загрузить страницу с драйвером "
@@ -121,8 +125,13 @@ class OzonLinkParser:
                     f"Контент товаров не найден "
                     f"(драйвер #{driver_attempt + 1})"
                 )
+                if self._recover_links_from_current_page(
+                    "после таймаута ожидания контента"
+                ):
+                    return True
                 if driver_attempt < max_driver_retries - 1:
                     continue
+                self._save_debug_snapshot("content_timeout")
                 return False
 
             except Exception as e:
@@ -134,6 +143,7 @@ class OzonLinkParser:
                         )
                         continue
                     logger.error("Все драйверы были заблокированы")
+                    self._save_debug_snapshot("access_blocked")
                     return False
 
                 logger.error(
@@ -141,6 +151,7 @@ class OzonLinkParser:
                     f"(драйвер #{driver_attempt + 1}): {e}"
                 )
                 if driver_attempt >= max_driver_retries - 1:
+                    self._save_debug_snapshot("load_error")
                     return False
 
         return False
@@ -196,7 +207,45 @@ class OzonLinkParser:
             time.sleep(scroll_wait)
 
         if not self.collected_links:
-            self._save_debug_snapshot()
+            self._save_debug_snapshot("no_links")
+
+    def _recover_links_from_current_page(self, reason: str) -> bool:
+        if not self.driver:
+            return False
+
+        items: Dict[str, dict[str, Any]] = {}
+        current_url = getattr(self.driver, "current_url", "") or ""
+        page_title = getattr(self.driver, "title", "") or ""
+
+        self._add_product_link(items, current_url, page_title)
+        for href in self._extract_product_links_from_html():
+            self._add_product_link(items, href, "")
+
+        if not items:
+            logger.warning(
+                "Не удалось восстановить ссылки %s: current_url=%s title=%r",
+                reason,
+                current_url,
+                page_title,
+            )
+            return False
+
+        for url, payload in items.items():
+            if (
+                url not in self.collected_links
+                and len(self.collected_links) < self.max_products
+            ):
+                self.collected_links[url] = payload
+
+        logger.warning(
+            "Ссылки восстановлены %s: +%s, всего %s/%s, current_url=%s",
+            reason,
+            len(items),
+            len(self.collected_links),
+            self.max_products,
+            current_url,
+        )
+        return bool(self.collected_links)
 
     def _scroll_for_more(self):
         try:
@@ -281,7 +330,13 @@ class OzonLinkParser:
 
     def _extract_product_links_from_html(self):
         page_source = html.unescape(self.driver.page_source)
-        page_source = page_source.replace("\\u002F", "/").replace("\\/", "/")
+        page_source = unquote(page_source)
+        page_source = (
+            page_source
+            .replace("\\u002F", "/")
+            .replace("\\/", "/")
+            .replace("\\u0026", "&")
+        )
         pattern = (
             r'(?:https?:)?//(?:www\.)?ozon\.(?:ru|kz)/product/'
             r'[^"\'<>\s\\]+'
@@ -398,10 +453,11 @@ class OzonLinkParser:
             )
         )
 
-    def _save_debug_snapshot(self):
+    def _save_debug_snapshot(self, reason: str = "debug"):
         try:
-            source_path = self.output_dir / "debug_page_source.html"
-            screenshot_path = self.output_dir / "debug_screenshot.png"
+            safe_reason = re.sub(r"[^a-zA-Z0-9_-]+", "_", reason)[:40]
+            source_path = self.output_dir / f"{safe_reason}_page_source.html"
+            screenshot_path = self.output_dir / f"{safe_reason}_screenshot.png"
 
             with open(source_path, "w", encoding="utf-8") as file:
                 file.write(self.driver.page_source)
