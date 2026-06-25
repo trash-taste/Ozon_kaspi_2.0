@@ -11,6 +11,39 @@ PRODUCT_LINK_PATTERN = re.compile(
     r'|/product/[^"\'<>\s\\]+'
 )
 
+PRICE_WITH_CURRENCY_PATTERN = re.compile(
+    r"(\d[\d\s\u00a0\u202f.,]{1,})\s*(?:₸|тг|тенге)"
+    r"|(?:₸|тг|тенге)\s*(\d[\d\s\u00a0\u202f.,]{1,})",
+    re.IGNORECASE,
+)
+
+TITLE_NOISE_MARKERS = (
+    "%",
+    "звезд",
+    "отзыв",
+    "балл",
+    "бонус",
+    "рассроч",
+    "достав",
+    "в корзин",
+    "осталось",
+    "купить",
+    "рейтинг",
+    "seller",
+    "продавец",
+)
+
+PRICE_NOISE_MARKERS = (
+    "достав",
+    "балл",
+    "бонус",
+    "кэшб",
+    "рассроч",
+    "месяц",
+    "отзыв",
+    "рейтинг",
+)
+
 
 def decode_ozon_source(page_source: str) -> str:
     source = html.unescape(page_source or "")
@@ -95,6 +128,51 @@ def extract_product_links_from_html(page_source: str) -> list[str]:
     return links
 
 
+def extract_title_from_card_text(card_text: str) -> str:
+    """Extract a product title from a visible Ozon listing card."""
+    candidates = []
+    for line in _split_card_text(card_text):
+        cleaned = _strip_price_fragments(line)
+        cleaned = _strip_title_noise(cleaned)
+        lowered = cleaned.casefold()
+        if any(marker in lowered for marker in TITLE_NOISE_MARKERS):
+            continue
+        if _looks_like_product_title(cleaned):
+            candidates.append(cleaned)
+
+    if not candidates:
+        text = _strip_price_fragments(_normalize_text(card_text))
+        for fragment in re.split(r"\s{2,}|[|•]", text):
+            cleaned = _strip_title_noise(fragment)
+            if _looks_like_product_title(cleaned):
+                candidates.append(cleaned)
+
+    return max(dict.fromkeys(candidates), key=_title_score) if candidates else ""
+
+
+def extract_price_from_card_text(card_text: str) -> int:
+    """Extract the most useful sale price from a visible Ozon listing card."""
+    values = []
+    for line in _split_card_text(card_text):
+        lowered = line.casefold()
+        if any(marker in lowered for marker in PRICE_NOISE_MARKERS):
+            continue
+        for match in PRICE_WITH_CURRENCY_PATTERN.finditer(line):
+            price = _extract_price_number(match.group(1) or match.group(2))
+            if price and price not in values:
+                values.append(price)
+
+    if not values:
+        for match in PRICE_WITH_CURRENCY_PATTERN.finditer(
+            _normalize_text(card_text)
+        ):
+            price = _extract_price_number(match.group(1) or match.group(2))
+            if price and price not in values:
+                values.append(price)
+
+    return min(values) if values else 0
+
+
 def extract_listing_items_from_html(
     page_source: str,
     base_url: str = "",
@@ -128,8 +206,8 @@ def _context_for_product(source: str, url: str) -> str:
     windows = []
     for token in dict.fromkeys(tokens):
         for match in re.finditer(re.escape(token), source):
-            left = max(0, match.start() - 5000)
-            right = min(len(source), match.end() + 5000)
+            left = max(0, match.start() - 2500)
+            right = min(len(source), match.end() + 2500)
             windows.append(source[left:right])
             if len(windows) >= 8:
                 break
@@ -155,50 +233,74 @@ def _extract_title_from_context(context: str) -> str:
                 candidates.append(title)
 
     if not candidates:
-        return ""
+        return extract_title_from_card_text(context)
 
     return max(dict.fromkeys(candidates), key=_title_score)
 
 
 def _extract_price_from_context(context: str) -> int:
-    preferred_keys = (
-        "cardPrice",
-        "finalPrice",
-        "currentPrice",
-        "salePrice",
-        "discountPrice",
-        "price",
-        "lowPrice",
+    preferred_key_groups = (
+        (
+            "cardPrice",
+            "finalPrice",
+            "currentPrice",
+            "salePrice",
+            "discountPrice",
+            "lowPrice",
+        ),
+        ("price",),
     )
-    for key in preferred_keys:
-        pattern = (
-            rf'"{key}"\s*:\s*'
-            r'(?:"((?:\\.|[^"\\]){1,80})"|(\d{3,10}))'
-        )
-        for match in re.finditer(pattern, context, re.IGNORECASE):
-            price = _extract_price_number(match.group(1) or match.group(2))
-            if price:
-                return price
 
-    for match in re.finditer(
-        r"(\d[\d\s\u00a0\u202f.,]{1,})\s*(?:₸|тг|тенге)",
-        context,
-        re.IGNORECASE,
-    ):
-        price = _extract_price_number(match.group(1))
-        if price:
-            return price
+    for preferred_keys in preferred_key_groups:
+        values = []
+        for key in preferred_keys:
+            pattern = (
+                rf'"{key}"\s*:\s*'
+                r'(?:"((?:\\.|[^"\\]){1,80})"|(\d{3,10}))'
+            )
+            for match in re.finditer(pattern, context, re.IGNORECASE):
+                price = _extract_price_number(
+                    match.group(1) or match.group(2)
+                )
+                if price and price not in values:
+                    values.append(price)
+        if values:
+            return min(values)
 
-    for match in re.finditer(
-        r"(?:₸|тг|тенге)\s*(\d[\d\s\u00a0\u202f.,]{1,})",
-        context,
-        re.IGNORECASE,
-    ):
-        price = _extract_price_number(match.group(1))
-        if price:
-            return price
+    return extract_price_from_card_text(context)
 
-    return 0
+
+def _split_card_text(card_text: str) -> list[str]:
+    text = decode_ozon_source(str(card_text or ""))
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(
+        r"(?<!\n)(\d[\d\s\u00a0\u202f.,]{1,}\s*(?:₸|тг|тенге))",
+        r"\n\1\n",
+        text,
+        flags=re.IGNORECASE,
+    )
+    lines = []
+    for line in text.splitlines():
+        cleaned = _normalize_text(line)
+        if cleaned:
+            lines.append(cleaned)
+    return lines
+
+
+def _strip_price_fragments(value: str) -> str:
+    return _normalize_text(PRICE_WITH_CURRENCY_PATTERN.sub(" ", value or ""))
+
+
+def _strip_title_noise(value: str) -> str:
+    text = _normalize_text(value)
+    text = re.sub(r"^[•\-\s]+", "", text)
+    text = re.sub(r"\b\d+(?:[.,]\d+)?\s*(?:/|\*)?\s*5\b", " ", text)
+    text = re.sub(r"\b\d+\s+отзыв\w*\b", " ", text, flags=re.IGNORECASE)
+    return _normalize_text(text)
+
+
+def _normalize_text(value: Any) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
 def _decode_jsonish_string(value: str) -> str:

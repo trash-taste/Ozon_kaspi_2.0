@@ -10,8 +10,10 @@ from typing import Any, Dict, Tuple
 from ..utils.resource_manager import resource_manager
 from .ozon_listing_data import (
     build_listing_page_url,
+    extract_price_from_card_text,
     extract_listing_items_from_html,
     extract_product_links_from_html,
+    extract_title_from_card_text,
     normalize_product_url,
 )
 
@@ -259,9 +261,29 @@ class OzonPlaywrightParser:
                 () => Array.from(
                     document.querySelectorAll('a[href*="/product/"]')
                 ).map(link => {
-                    const card = link.closest(
+                    let card = link.closest(
                         '[class*="tile"], [data-widget], article'
                     ) || link.parentElement;
+                    let root = link;
+                    for (let i = 0; i < 8 && root.parentElement; i += 1) {
+                        root = root.parentElement;
+                        const rootText = (
+                            root.innerText || root.textContent || ''
+                        ).replace(/\\s+/g, ' ').trim();
+                        const linkCount = root.querySelectorAll(
+                            'a[href*="/product/"]'
+                        ).length;
+                        const hasPrice = /(₸|тг|тенге)/i.test(rootText);
+                        if (
+                            hasPrice &&
+                            rootText.length >= 20 &&
+                            rootText.length <= 2500 &&
+                            linkCount <= 8
+                        ) {
+                            card = root;
+                            break;
+                        }
+                    }
                     const img = link.querySelector('img')
                         || (card ? card.querySelector('img') : null);
                     const text = [
@@ -316,10 +338,17 @@ class OzonPlaywrightParser:
                         800
                     );
                     window.scrollBy(0, step);
+                    window.scrollTo({
+                        top: Math.min(
+                            document.body.scrollHeight,
+                            window.scrollY + step * 2
+                        ),
+                        behavior: 'instant'
+                    });
                     window.dispatchEvent(new Event('scroll', {bubbles: true}));
                     document.dispatchEvent(
                         new WheelEvent('wheel', {
-                            deltaY: step,
+                            deltaY: step * 2,
                             bubbles: true,
                             cancelable: true
                         })
@@ -327,6 +356,7 @@ class OzonPlaywrightParser:
                 }
                 """
             )
+            page.mouse.wheel(0, 1800)
         except Exception as exc:
             logger.debug("Playwright: scroll failed: %s", exc)
 
@@ -369,55 +399,10 @@ class OzonPlaywrightParser:
                 current[key] = payload[key]
 
     def _extract_title_from_card_text(self, card_text: str) -> str:
-        lines = [
-            re.sub(r"\s+", " ", line).strip()
-            for line in (card_text or "").splitlines()
-        ]
-        ignored_markers = (
-            "₸",
-            "₽",
-            "тг",
-            "тенге",
-            "%",
-            "звезд",
-            "отзыв",
-            "балл",
-            "рассроч",
-            "достав",
-            "в корзин",
-            "осталось",
-            "купить",
-            "рейтинг",
-            "seller",
-        )
-        candidates = []
-        for line in lines:
-            lowered = line.casefold()
-            if len(line) < 5 or len(line) > 260:
-                continue
-            if not re.search(r"[A-Za-zА-Яа-я]", line):
-                continue
-            if any(marker in lowered for marker in ignored_markers):
-                continue
-            candidates.append(line)
-
-        return max(candidates, key=len) if candidates else ""
+        return extract_title_from_card_text(card_text)
 
     def _extract_price_from_card_text(self, card_text: str) -> int:
-        values = []
-        patterns = (
-            r"(\d[\d\s\u00a0\u202f.,]{1,})\s*(?:₸|тг|тенге)",
-            r"(?:₸|тг|тенге)\s*(\d[\d\s\u00a0\u202f.,]{1,})",
-        )
-        for pattern in patterns:
-            for match in re.finditer(pattern, card_text or "", re.IGNORECASE):
-                cleaned = re.sub(r"[^\d]", "", match.group(1))
-                if not cleaned:
-                    continue
-                value = int(cleaned)
-                if 100 <= value <= 10_000_000 and value not in values:
-                    values.append(value)
-        return values[0] if values else 0
+        return extract_price_from_card_text(card_text)
 
     def _is_blocked(self, page) -> bool:
         try:

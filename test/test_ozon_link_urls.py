@@ -3,7 +3,12 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.parsers.link_parser import OzonLinkParser
-from src.parsers.ozon_listing_data import build_listing_page_url
+from src.parsers.ozon_listing_data import (
+    build_listing_page_url,
+    extract_listing_items_from_html,
+    extract_price_from_card_text,
+    extract_title_from_card_text,
+)
 from src.parsers.ozon_playwright_parser import OzonPlaywrightParser
 from src.parsers.product_parser import (
     ProductInfo,
@@ -69,6 +74,18 @@ class OzonProductURLTests(unittest.TestCase):
             34990,
         )
 
+    def test_extracts_single_line_card_title_and_lowest_sale_price(self):
+        card_text = (
+            "Мультиварка REDMOND RMC-M52, черная "
+            "39 990 ₸ 34 990 ₸ 4.9 120 отзывов В корзину"
+        )
+
+        self.assertEqual(
+            extract_title_from_card_text(card_text),
+            "Мультиварка REDMOND RMC-M52, черная",
+        )
+        self.assertEqual(extract_price_from_card_text(card_text), 34990)
+
     def test_recovers_current_product_url_when_category_wait_times_out(self):
         self.parser.driver = SimpleNamespace(
             current_url="https://ozon.kz/product/test-product-4103859568/",
@@ -121,6 +138,33 @@ class OzonProductURLTests(unittest.TestCase):
 
         self.assertEqual(
             self.parser._extract_product_items_from_html(),
+            {
+                "https://ozon.kz/product/redmond-rmc-m52-4103859568/": {
+                    "title": "Мультиварка REDMOND RMC-M52, черная",
+                    "price": 34990,
+                }
+            },
+        )
+
+    def test_listing_metadata_prefers_card_price_over_regular_price(self):
+        html = r'''
+        <script>
+        window.__data = {
+          "items": [{
+            "link": "https:\/\/ozon.kz\/product\/redmond-rmc-m52-4103859568\/",
+            "title": "Мультиварка REDMOND RMC-M52, черная",
+            "price": "39 990 ₸",
+            "cardPrice": "34 990 ₸"
+          }]
+        };
+        </script>
+        '''
+
+        self.assertEqual(
+            extract_listing_items_from_html(
+                html,
+                "https://ozon.kz/category/test-123/",
+            ),
             {
                 "https://ozon.kz/product/redmond-rmc-m52-4103859568/": {
                     "title": "Мультиварка REDMOND RMC-M52, черная",
