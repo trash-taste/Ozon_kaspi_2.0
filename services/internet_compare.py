@@ -530,6 +530,42 @@ def _calculate_economics(
     }
 
 
+def _build_unmatched_result(product: dict[str, Any]) -> dict[str, Any]:
+    ozon_price = _to_decimal(product.get("price"))
+
+    def money(value: Decimal | None) -> float | None:
+        if value is None:
+            return None
+        return float(
+            value.quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+        )
+
+    brand = _extract_brand(product)
+    return {
+        "matched": False,
+        "ozon_title": str(product.get("title") or ""),
+        "internet_title": "Не найдено точное совпадение",
+        "brand": brand.upper() if brand else None,
+        "model": ", ".join(sorted(_extract_models(product.get("title")))) or None,
+        "source": "",
+        "sources_count": 0,
+        "ozon_price": money(ozon_price),
+        "internet_price": None,
+        "commission_rate": None,
+        "commission": None,
+        "net_revenue": None,
+        "delivery": None,
+        "total_cost": None,
+        "price_difference": None,
+        "profit": None,
+        "roi": None,
+        "match_score": None,
+        "availability": "Не найдено",
+        "ozon_url": str(product.get("url") or ""),
+        "internet_url": "",
+    }
+
+
 async def _compare_one(
     session: aiohttp.ClientSession,
     semaphore: asyncio.Semaphore,
@@ -577,9 +613,11 @@ async def _compare_one(
                 product.get("title"),
             )
     if selected is None:
+        if min_roi is None:
+            return _build_unmatched_result(product)
         return None
     internet_product, score, sources_count = selected
-    return _calculate_economics(
+    result = _calculate_economics(
         product,
         internet_product,
         score,
@@ -587,6 +625,9 @@ async def _compare_one(
         min_roi=min_roi,
         commission_rate=commission_rate,
     )
+    if result is not None:
+        result["matched"] = True
+    return result
 
 
 async def compare_with_internet(
@@ -671,8 +712,17 @@ async def compare_with_internet(
     results = [item for item in compared if item is not None]
 
     results.sort(
-        key=lambda item: (item["roi"], item["profit"]),
+        key=lambda item: (
+            bool(item.get("matched")),
+            item.get("roi") if item.get("roi") is not None else -10**9,
+            item.get("profit") if item.get("profit") is not None else -10**9,
+        ),
         reverse=True,
     )
-    logger.info("Найдено интернет-цен: %s", len(results))
+    matched_count = len([item for item in results if item.get("matched")])
+    logger.info(
+        "Интернет-отчет: строк=%s, точных совпадений=%s",
+        len(results),
+        matched_count,
+    )
     return results

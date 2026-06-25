@@ -123,14 +123,12 @@ def _extract_prices_from_json(value: Any) -> List[int]:
 
     preferred_keys = (
         "cardPrice",
-        "price",
         "finalPrice",
         "currentPrice",
         "salePrice",
         "discountPrice",
         "lowPrice",
-        "originalPrice",
-        "oldPrice",
+        "price",
     )
 
     for item in _walk_json_values(value):
@@ -150,6 +148,39 @@ def _extract_prices_from_json(value: Any) -> List[int]:
             add_price(match.group(1))
 
     return prices
+
+
+def _pick_sale_price(value: Any) -> int:
+    candidates = []
+    preferred_keys = (
+        "cardPrice",
+        "finalPrice",
+        "currentPrice",
+        "salePrice",
+        "discountPrice",
+        "lowPrice",
+        "price",
+    )
+    if not isinstance(value, dict):
+        return 0
+    for key in preferred_keys:
+        price = _extract_price_number(value.get(key))
+        if price and price not in candidates:
+            candidates.append(price)
+    return min(candidates) if candidates else 0
+
+
+def _pick_original_price(value: Any, sale_price: int = 0) -> int:
+    if not isinstance(value, dict):
+        return 0
+    candidates = []
+    for key in ("originalPrice", "oldPrice", "basePrice"):
+        price = _extract_price_number(value.get(key))
+        if price and price not in candidates:
+            candidates.append(price)
+    if sale_price:
+        candidates = [price for price in candidates if price > sale_price]
+    return max(candidates) if candidates else 0
 
 
 def _extract_ozon_widget_payloads(page_source: str) -> List[Tuple[str, Dict[str, Any]]]:
@@ -815,9 +846,14 @@ class ProductWorker:
             # Ищем информацию о ценах в webPrice
             price_data = self._find_price_data(widget_states)
             if price_data:
-                product_info.card_price = self._extract_price_number(price_data.get('cardPrice', ''))
-                product_info.price = self._extract_price_number(price_data.get('price', ''))
-                product_info.original_price = self._extract_price_number(price_data.get('originalPrice', ''))
+                sale_price = _pick_sale_price(price_data)
+                if sale_price:
+                    product_info.card_price = sale_price
+                    product_info.price = sale_price
+                product_info.original_price = _pick_original_price(
+                    price_data,
+                    sale_price,
+                )
 
             if not product_info.name:
                 titles = []
@@ -836,13 +872,26 @@ class ProductWorker:
                 for value in widget_states.values():
                     decoded = self._decode_widget_state(value)
                     if decoded:
-                        prices.extend(_extract_prices_from_json(decoded))
+                        sale_price = _pick_sale_price(decoded)
+                        if sale_price:
+                            prices.append(sale_price)
+                        else:
+                            prices.extend(_extract_prices_from_json(decoded))
                 prices = list(dict.fromkeys(price for price in prices if price))
                 if prices:
-                    product_info.card_price = prices[0]
-                    product_info.price = prices[0]
-                    if len(prices) > 1 and prices[1] > prices[0]:
-                        product_info.original_price = prices[1]
+                    product_info.card_price = min(prices)
+                    product_info.price = min(prices)
+
+            if product_info.price and not product_info.original_price:
+                for value in widget_states.values():
+                    decoded = self._decode_widget_state(value)
+                    if decoded:
+                        product_info.original_price = _pick_original_price(
+                            decoded,
+                            product_info.price,
+                        )
+                        if product_info.original_price:
+                            break
             
             # Проверяем, что получили основную информацию
             if product_info.name and product_info.price:

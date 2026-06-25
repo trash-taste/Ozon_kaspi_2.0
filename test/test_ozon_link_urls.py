@@ -3,6 +3,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.parsers.link_parser import OzonLinkParser
+from src.parsers.ozon_listing_data import build_listing_page_url
 from src.parsers.ozon_playwright_parser import OzonPlaywrightParser
 from src.parsers.product_parser import (
     ProductInfo,
@@ -156,6 +157,15 @@ class OzonProductURLTests(unittest.TestCase):
             ["https://ozon.kz/product/redmond-rmc-m52-4103859568/"],
         )
 
+    def test_builds_next_listing_page_url_without_losing_filters(self):
+        self.assertEqual(
+            build_listing_page_url(
+                "https://ozon.kz/category/test-123/?seller=0&currency_price=1%3B2",
+                2,
+            ),
+            "https://ozon.kz/category/test-123/?seller=0&currency_price=1%3B2&page=2",
+        )
+
 
 class OzonProductWorkerTests(unittest.TestCase):
     def test_extracts_title_price_and_image_from_json_ld(self):
@@ -271,6 +281,25 @@ class OzonProductWorkerTests(unittest.TestCase):
         self.assertEqual(product.price, 34990)
         self.assertEqual(product.original_price, 39990)
         self.assertEqual(product.image_url, "https://img.test/item.jpg")
+
+    def test_product_worker_prefers_card_price_from_composer_api(self):
+        worker = ProductWorker(1)
+        product = worker._parse_json_response(
+            "4103859568",
+            r'''
+            {
+              "widgetStates": {
+                "webStickyProducts-123": "{\"name\":\"REDMOND RMC-M52 мультиварка\"}",
+                "webPrice-123": "{\"cardPrice\":\"29 990 ₸\",\"price\":\"34 990 ₸\",\"originalPrice\":\"39 990 ₸\"}"
+              }
+            }
+            ''',
+        )
+
+        self.assertTrue(product.success)
+        self.assertEqual(product.card_price, 29990)
+        self.assertEqual(product.price, 29990)
+        self.assertEqual(product.original_price, 39990)
 
     def test_product_worker_replaces_generic_ozon_title_from_metadata(self):
         worker = ProductWorker(1)

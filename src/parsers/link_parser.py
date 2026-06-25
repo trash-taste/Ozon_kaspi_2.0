@@ -14,6 +14,7 @@ from selenium.webdriver.support.ui import WebDriverWait
 from ..utils.resource_manager import resource_manager
 from ..utils.selenium_manager import SeleniumManager
 from .ozon_listing_data import (
+    build_listing_page_url,
     extract_listing_items_from_html,
     extract_product_links_from_html,
     normalize_product_url,
@@ -169,8 +170,6 @@ class OzonLinkParser:
 
     def _collect_links(self):
         seen_urls = set()
-        scroll_num = 0
-        no_new_items_count = 0
         no_new_limit = max(
             3,
             int(os.getenv("OZON_LINK_IDLE_SCROLLS", "6")),
@@ -179,35 +178,63 @@ class OzonLinkParser:
             1,
             int(os.getenv("OZON_SCROLL_WAIT_SECONDS", "4")),
         )
+        max_pages = max(1, int(os.getenv("OZON_MAX_PAGES", "10")))
+        base_url = getattr(self.driver, "current_url", "") or self.category_url
 
-        while len(self.collected_links) < self.max_products:
-            scroll_num += 1
-            current_items = self._extract_all_links()
-
-            new_count = 0
-            for url, img_url in current_items.items():
-                if url not in seen_urls and len(self.collected_links) < self.max_products:
-                    seen_urls.add(url)
-                    self.collected_links[url] = img_url
-                    new_count += 1
-
-            logger.info(
-                f"Скролл {scroll_num}: +{new_count}, "
-                f"всего {len(self.collected_links)}/{self.max_products}"
-            )
-
-            if new_count == 0:
-                no_new_items_count += 1
-                if no_new_items_count >= no_new_limit:
+        for page_num in range(1, max_pages + 1):
+            if page_num > 1:
+                next_url = build_listing_page_url(base_url, page_num)
+                logger.info("Переход на страницу Ozon %s: %s", page_num, next_url)
+                if not self.selenium_manager.navigate_to_url(next_url):
+                    logger.warning("Не удалось загрузить страницу Ozon %s", page_num)
                     break
-            else:
-                no_new_items_count = 0
+
+            no_new_items_count = 0
+            page_new_count = 0
+            scroll_num = 0
+
+            while len(self.collected_links) < self.max_products:
+                scroll_num += 1
+                current_items = self._extract_all_links()
+
+                new_count = 0
+                for url, img_url in current_items.items():
+                    if (
+                        url not in seen_urls
+                        and len(self.collected_links) < self.max_products
+                    ):
+                        seen_urls.add(url)
+                        self.collected_links[url] = img_url
+                        new_count += 1
+                        page_new_count += 1
+
+                logger.info(
+                    "Страница %s, скролл %s: +%s, всего %s/%s",
+                    page_num,
+                    scroll_num,
+                    new_count,
+                    len(self.collected_links),
+                    self.max_products,
+                )
+
+                if new_count == 0:
+                    no_new_items_count += 1
+                    if no_new_items_count >= no_new_limit:
+                        break
+                else:
+                    no_new_items_count = 0
+
+                if len(self.collected_links) >= self.max_products:
+                    break
+
+                self._scroll_for_more()
+                time.sleep(scroll_wait)
 
             if len(self.collected_links) >= self.max_products:
                 break
-
-            self._scroll_for_more()
-            time.sleep(scroll_wait)
+            if page_num > 1 and page_new_count == 0:
+                logger.info("Страница %s не дала новых товаров", page_num)
+                break
 
         if not self.collected_links:
             self._save_debug_snapshot("no_links")

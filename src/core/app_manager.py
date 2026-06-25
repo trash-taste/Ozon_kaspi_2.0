@@ -587,9 +587,13 @@ class AppManager:
             report_path = save_internet_comparison_report(
                 comparison_items
             )
+            matched_count = len(
+                [item for item in comparison_items if item.get("matched")]
+            )
             caption = (
                 "Сравнение с интернет-магазинами завершено.\n"
-                f"Точных совпадений: {len(comparison_items)}.\n"
+                f"Строк в отчете: {len(comparison_items)}.\n"
+                f"Точных совпадений: {matched_count}.\n"
                 "Комиссия: 16%. В файле показаны прибыль и ROI."
             )
             return self._send_files_to_telegram(

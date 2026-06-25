@@ -9,6 +9,7 @@ from typing import Any, Dict, Tuple
 
 from ..utils.resource_manager import resource_manager
 from .ozon_listing_data import (
+    build_listing_page_url,
     extract_listing_items_from_html,
     extract_product_links_from_html,
     normalize_product_url,
@@ -169,44 +170,83 @@ class OzonPlaywrightParser:
         )
 
     def _collect_links(self, page) -> None:
-        idle_scrolls = 0
         idle_limit = max(3, int(os.getenv("OZON_LINK_IDLE_SCROLLS", "6")))
         scroll_wait_ms = max(
             500,
             int(float(os.getenv("OZON_SCROLL_WAIT_SECONDS", "2")) * 1000),
         )
+        max_pages = max(1, int(os.getenv("OZON_MAX_PAGES", "10")))
+        base_url = getattr(page, "url", "") or self.category_url
 
-        for scroll_num in range(1, self.max_products * 3 + 1):
-            current_items = self._extract_items_from_page(page)
-            new_count = 0
-            for url, payload in current_items.items():
-                if (
-                    url not in self.collected_links
-                    and len(self.collected_links) < self.max_products
-                ):
-                    self.collected_links[url] = payload
-                    new_count += 1
+        for page_num in range(1, max_pages + 1):
+            if page_num > 1:
+                next_url = build_listing_page_url(base_url, page_num)
+                logger.info(
+                    "Playwright: переход на страницу Ozon %s: %s",
+                    page_num,
+                    next_url,
+                )
+                try:
+                    page.goto(
+                        next_url,
+                        wait_until="domcontentloaded",
+                        timeout=int(
+                            float(os.getenv("OZON_PAGE_LOAD_TIMEOUT", "30"))
+                            * 1000
+                        ),
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Playwright: страница Ozon %s не загрузилась: %s",
+                        page_num,
+                        exc,
+                    )
+                    break
 
-            logger.info(
-                "Playwright скролл %s: +%s, всего %s/%s",
-                scroll_num,
-                new_count,
-                len(self.collected_links),
-                self.max_products,
-            )
+            idle_scrolls = 0
+            page_new_count = 0
+            for scroll_num in range(1, self.max_products * 3 + 1):
+                current_items = self._extract_items_from_page(page)
+                new_count = 0
+                for url, payload in current_items.items():
+                    if (
+                        url not in self.collected_links
+                        and len(self.collected_links) < self.max_products
+                    ):
+                        self.collected_links[url] = payload
+                        new_count += 1
+                        page_new_count += 1
+
+                logger.info(
+                    "Playwright страница %s, скролл %s: +%s, всего %s/%s",
+                    page_num,
+                    scroll_num,
+                    new_count,
+                    len(self.collected_links),
+                    self.max_products,
+                )
+
+                if len(self.collected_links) >= self.max_products:
+                    break
+
+                if new_count:
+                    idle_scrolls = 0
+                else:
+                    idle_scrolls += 1
+                    if idle_scrolls >= idle_limit:
+                        break
+
+                self._scroll_for_more(page)
+                page.wait_for_timeout(scroll_wait_ms)
 
             if len(self.collected_links) >= self.max_products:
                 break
-
-            if new_count:
-                idle_scrolls = 0
-            else:
-                idle_scrolls += 1
-                if idle_scrolls >= idle_limit:
-                    break
-
-            self._scroll_for_more(page)
-            page.wait_for_timeout(scroll_wait_ms)
+            if page_num > 1 and page_new_count == 0:
+                logger.info(
+                    "Playwright: страница %s не дала новых товаров",
+                    page_num,
+                )
+                break
 
         if not self.collected_links:
             self._save_debug_snapshot(page, "playwright_no_links")

@@ -2,7 +2,7 @@ import html
 import json
 import re
 from typing import Any, Dict
-from urllib.parse import unquote, urljoin, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, unquote, urlencode, urljoin, urlsplit, urlunsplit
 
 
 PRODUCT_LINK_PATTERN = re.compile(
@@ -52,6 +52,31 @@ def normalize_product_url(href: str, base_url: str = "") -> str:
             parsed.path,
             "",
             "",
+        )
+    )
+
+
+def build_listing_page_url(url: str, page_number: int) -> str:
+    if page_number <= 1:
+        return url
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        return url
+
+    query_items = [
+        (key, value)
+        for key, value in parse_qsl(parsed.query, keep_blank_values=True)
+        if key != "page"
+    ]
+    query_items.append(("page", str(page_number)))
+    return urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            parsed.path,
+            urlencode(query_items, doseq=True),
+            parsed.fragment,
         )
     )
 

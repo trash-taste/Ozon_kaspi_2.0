@@ -338,6 +338,33 @@ class InternetAsyncTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(results, [])
 
+    async def test_includes_unmatched_rows_when_roi_filter_disabled(self):
+        product = {
+            "title": "REDMOND RMC-M52",
+            "price": 10000,
+            "url": "ozon",
+        }
+        with patch(
+            "services.internet_compare.search_internet_sources",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "services.kaspi_compare.search_kaspi_product",
+            new=AsyncMock(return_value=[]),
+        ):
+            results = await internet_compare.compare_with_internet(
+                [product],
+                min_roi=None,
+                commission_rate=16,
+            )
+
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0]["matched"])
+        self.assertEqual(
+            results[0]["internet_title"],
+            "Не найдено точное совпадение",
+        )
+        self.assertEqual(results[0]["ozon_price"], 10000.0)
+
 
 class InternetReportAndCliTests(unittest.TestCase):
     def test_report_contains_links_and_negative_rows(self):
