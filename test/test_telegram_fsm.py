@@ -4,7 +4,6 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from src.core.app_manager import AppManager
 from src.parsers.link_parser import OzonLinkParser
-from src.parsers.ozon_playwright_parser import OzonPlaywrightParser
 from src.telegram.bot_manager import ScanStates, TelegramBotManager
 
 
@@ -107,33 +106,17 @@ class TelegramFSMTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TelegramKaspiIntegrationTests(unittest.TestCase):
-    def test_app_manager_uses_playwright_parser_by_default(self):
+    def test_app_manager_uses_selenium_stealth_parser_by_default(self):
         app_manager = AppManager.__new__(AppManager)
         app_manager.settings = SimpleNamespace(
             MAX_PRODUCTS=10,
             HEADLESS=True,
         )
 
-        with patch.dict("os.environ", {}, clear=False):
-            parser = app_manager._create_link_parser(
-                "https://ozon.kz/category/test-123/",
-                "123",
-            )
-
-        self.assertIsInstance(parser, OzonPlaywrightParser)
-
-    def test_app_manager_can_disable_playwright_parser(self):
-        app_manager = AppManager.__new__(AppManager)
-        app_manager.settings = SimpleNamespace(
-            MAX_PRODUCTS=10,
-            HEADLESS=True,
+        parser = app_manager._create_link_parser(
+            "https://ozon.kz/category/test-123/",
+            "123",
         )
-
-        with patch.dict("os.environ", {"OZON_USE_PLAYWRIGHT": "0"}):
-            parser = app_manager._create_link_parser(
-                "https://ozon.kz/category/test-123/",
-                "123",
-            )
 
         self.assertIsInstance(parser, OzonLinkParser)
 

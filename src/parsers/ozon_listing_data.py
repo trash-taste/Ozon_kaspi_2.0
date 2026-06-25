@@ -274,7 +274,7 @@ def _split_card_text(card_text: str) -> list[str]:
     text = decode_ozon_source(str(card_text or ""))
     text = re.sub(r"<[^>]+>", " ", text)
     text = re.sub(
-        r"(?<!\n)(\d[\d\s\u00a0\u202f.,]{1,}\s*(?:₸|тг|тенге))",
+        r"(\d[\d\s\u00a0\u202f.,]{1,}\s*(?:₸|тг|тенге))",
         r"\n\1\n",
         text,
         flags=re.IGNORECASE,

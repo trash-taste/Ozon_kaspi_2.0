@@ -2,11 +2,9 @@ import logging
 import threading
 import asyncio
 import time
-import os
 from typing import Dict, Any, List, Optional
 from ..config.settings import Settings
 from ..parsers.link_parser import OzonLinkParser
-from ..parsers.ozon_playwright_parser import OzonPlaywrightParser
 from ..parsers.product_parser import OzonProductParser
 from ..parsers.seller_parser import OzonSellerParser
 from ..utils.excel_exporter import ExcelExporter
@@ -122,26 +120,6 @@ class AppManager:
             
             link_parser = self._create_link_parser(category_url, user_id)
             success, product_links = link_parser.start_parsing()
-
-            if (
-                not success
-                and isinstance(link_parser, OzonPlaywrightParser)
-                and os.getenv("OZON_DISABLE_SELENIUM_FALLBACK", "0") != "1"
-            ):
-                logger.warning(
-                    "Playwright не собрал ссылки Ozon, пробуем Selenium"
-                )
-                self._notify_user(
-                    user_id,
-                    "Playwright не собрал ссылки, пробую запасной Selenium.",
-                )
-                link_parser = OzonLinkParser(
-                    category_url,
-                    self.settings.MAX_PRODUCTS,
-                    user_id,
-                    headless=self.settings.HEADLESS,
-                )
-                success, product_links = link_parser.start_parsing()
             
             if self.stop_event.is_set():
                 return
@@ -278,15 +256,7 @@ class AppManager:
                 resource_manager.finish_parsing_session(user_id)
     
     def _create_link_parser(self, category_url: str, user_id: str = None):
-        if os.getenv("OZON_USE_PLAYWRIGHT", "1") == "0":
-            return OzonLinkParser(
-                category_url,
-                self.settings.MAX_PRODUCTS,
-                user_id,
-                headless=self.settings.HEADLESS,
-            )
-
-        return OzonPlaywrightParser(
+        return OzonLinkParser(
             category_url,
             self.settings.MAX_PRODUCTS,
             user_id,

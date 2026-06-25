@@ -5,6 +5,7 @@ import json
 import os
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException
@@ -28,7 +29,15 @@ class SeleniumManager:
         
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_argument("--lang=ru-RU")
+        chrome_options.add_argument("--remote-debugging-port=0")
+        chrome_options.add_argument(
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        )
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         
@@ -41,7 +50,7 @@ class SeleniumManager:
         chrome_options.add_argument("--window-size=1920,1080")
         
         try:
-            driver = webdriver.Chrome(options=chrome_options)
+            driver = self._create_chrome(chrome_options)
             
 
             stealth(driver,
@@ -79,7 +88,15 @@ class SeleniumManager:
         
         chrome_options.add_argument("--no-sandbox")
         chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_argument("--lang=ru-RU")
+        chrome_options.add_argument("--remote-debugging-port=0")
+        chrome_options.add_argument(
+            "--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/125.0.0.0 Safari/537.36"
+        )
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
         chrome_options.add_experimental_option('perfLoggingPrefs', {'enableNetwork': True, 'enablePage': False})
@@ -97,7 +114,7 @@ class SeleniumManager:
         chrome_options.add_argument("--window-size=1920,1080")
         
         try:
-            driver = webdriver.Chrome(options=chrome_options)
+            driver = self._create_chrome(chrome_options)
             
             stealth(driver,
                    languages=["ru-RU", "ru"],
@@ -214,6 +231,15 @@ class SeleniumManager:
         except Exception as e:
             logger.error(f"Ошибка извлечения JSON из HTML: {e}")
             return None
+
+    def _create_chrome(self, chrome_options: Options) -> webdriver.Chrome:
+        driver_path = os.getenv("CHROMEDRIVER_PATH")
+        if driver_path:
+            return webdriver.Chrome(
+                service=Service(executable_path=driver_path),
+                options=chrome_options,
+            )
+        return webdriver.Chrome(options=chrome_options)
     
     def _wait_for_antibot_bypass(self, max_wait_time: int = None):
         if max_wait_time is None:

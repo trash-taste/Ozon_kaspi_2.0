@@ -7,16 +7,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Tuple
 
-from selenium.common.exceptions import TimeoutException
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-
 from ..utils.resource_manager import resource_manager
 from ..utils.selenium_manager import SeleniumManager
 from .ozon_listing_data import (
     build_listing_page_url,
-    extract_price_from_card_text,
     extract_listing_items_from_html,
+    extract_price_from_card_text,
     extract_product_links_from_html,
     extract_title_from_card_text,
     normalize_product_url,
@@ -26,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 
 class OzonLinkParser:
+    """Selenium-stealth listing collector for Ozon category/search pages."""
+
     def __init__(
         self,
         category_url: str,
@@ -36,6 +34,7 @@ class OzonLinkParser:
         self.category_url = category_url
         self.max_products = max_products
         self.user_id = user_id
+        self.headless = headless
         self.selenium_manager = SeleniumManager(headless=headless)
         self.driver = None
         self.collected_links: Dict[str, dict[str, Any]] = {}
@@ -43,142 +42,89 @@ class OzonLinkParser:
         self.category_name = self._extract_category_name(category_url)
         self.timestamp = datetime.now().strftime("%d.%m.%Y_%H-%M-%S")
         self.output_folder = f"{self.category_name}_{self.timestamp}"
-
-    def _extract_category_name(self, url: str) -> str:
-        try:
-            match = re.search(r"/category/([^/]+)-(\d+)/", url)
-            if match:
-                return match.group(1).replace("-", "_")
-            if "/search/" in url:
-                return "search"
-            if "/seller/" in url:
-                return "seller"
-            return "unknown_category"
-        except Exception:
-            return "unknown_category"
+        self.output_dir: Path | None = None
 
     def start_parsing(self) -> Tuple[bool, Dict[str, dict[str, Any]]]:
         try:
             if self.user_id:
                 resource_manager.start_parsing_session(
-                    self.user_id, "links", self.max_products
+                    self.user_id,
+                    "links",
+                    self.max_products,
                 )
 
             self._create_output_folder()
             self.driver = self.selenium_manager.create_driver()
 
-            if not self._load_page():
+            if not self._open_page(self.category_url):
+                self._save_debug_snapshot("initial_load_failed")
                 return False, {}
 
-            self._collect_links()
-            saved = self._save_links()
+            self._wait_for_short_redirect()
+            self._collect_products()
+            self._save_links()
 
             logger.info(
-                f"Собрано {len(self.collected_links)} ссылок "
-                f"для пользователя {self.user_id}"
+                "Selenium stealth собрал товаров Ozon: %s/%s",
+                len(self.collected_links),
+                self.max_products,
             )
-            return saved and bool(self.collected_links), self.collected_links
+            return bool(self.collected_links), self.collected_links
 
-        except Exception as e:
-            logger.error(f"Ошибка парсинга ссылок: {e}")
+        except Exception as exc:
+            logger.exception("Ошибка Selenium stealth-сборщика Ozon: %s", exc)
             return False, {}
         finally:
             self._cleanup()
             if self.user_id:
                 resource_manager.finish_parsing_session(self.user_id)
 
-    def _load_page(self) -> bool:
-        max_driver_retries = 3
-
-        for driver_attempt in range(max_driver_retries):
-            try:
-                logger.info(
-                    f"Попытка загрузки страницы с драйвером "
-                    f"#{driver_attempt + 1}/{max_driver_retries}"
-                )
-
-                if driver_attempt > 0:
-                    logger.info(
-                        f"Пересоздание драйвера после блокировки "
-                        f"(драйвер #{driver_attempt + 1})"
-                    )
-                    self.selenium_manager.close()
-                    time.sleep(3)
-                    self.driver = self.selenium_manager.create_driver()
-
-                if not self.selenium_manager.navigate_to_url(self.category_url):
-                    if self._recover_links_from_current_page(
-                        "после неудачной загрузки"
-                    ):
-                        return True
-                    if driver_attempt < max_driver_retries - 1:
-                        logger.warning(
-                            f"Не удалось загрузить страницу с драйвером "
-                            f"#{driver_attempt + 1}, пробуем новый..."
-                        )
-                        continue
-                    return False
-
-                self._wait_for_product_content()
-                logger.info(
-                    f"Страница успешно загружена с драйвером "
-                    f"#{driver_attempt + 1}"
-                )
-                return True
-
-            except TimeoutException:
-                logger.error(
-                    f"Контент товаров не найден "
-                    f"(драйвер #{driver_attempt + 1})"
-                )
-                if self._recover_links_from_current_page(
-                    "после таймаута ожидания контента"
-                ):
-                    return True
-                if driver_attempt < max_driver_retries - 1:
-                    continue
-                self._save_debug_snapshot("content_timeout")
+    def _open_page(self, url: str) -> bool:
+        if not self.driver:
+            return False
+        try:
+            if not self.selenium_manager.navigate_to_url(url):
                 return False
+            self._wait_for_listing_or_product(timeout=20)
+            return True
+        except Exception as exc:
+            logger.warning("Страница Ozon не загрузилась: %s", exc)
+            return bool(self._extract_product_items_from_html())
 
-            except Exception as e:
-                if "Access blocked" in str(e):
-                    if driver_attempt < max_driver_retries - 1:
-                        logger.warning(
-                            f"Драйвер #{driver_attempt + 1} заблокирован, "
-                            "пробуем новый..."
-                        )
-                        continue
-                    logger.error("Все драйверы были заблокированы")
-                    self._save_debug_snapshot("access_blocked")
-                    return False
+    def _wait_for_listing_or_product(self, timeout: int) -> None:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if not self.driver:
+                return
+            try:
+                if self.driver.find_elements("css selector", 'a[href*="/product/"]'):
+                    return
+                if "ozon." in (self.driver.current_url or ""):
+                    items = self._extract_product_items_from_html()
+                    if items:
+                        return
+            except Exception:
+                pass
+            time.sleep(0.5)
 
-                logger.error(
-                    f"Ошибка загрузки страницы "
-                    f"(драйвер #{driver_attempt + 1}): {e}"
-                )
-                if driver_attempt >= max_driver_retries - 1:
-                    self._save_debug_snapshot("load_error")
-                    return False
-
-        return False
-
-    def _wait_for_product_content(self):
-        WebDriverWait(self.driver, 60).until(
-            lambda driver: driver.find_elements(
-                By.CSS_SELECTOR, 'a[href*="/product/"]'
-            )
-            or driver.find_elements(By.ID, "contentScrollPaginator")
+    def _wait_for_short_redirect(self) -> None:
+        if not self.driver:
+            return
+        for _ in range(12):
+            current_url = getattr(self.driver, "current_url", "") or ""
+            if not re.search(r"/t/[^/?#]+", current_url):
+                return
+            time.sleep(1)
+        logger.warning(
+            "Короткая ссылка Ozon не отдала редирект: %s",
+            getattr(self.driver, "current_url", ""),
         )
 
-    def _collect_links(self):
-        seen_urls = set()
-        no_new_limit = max(
-            3,
-            int(os.getenv("OZON_LINK_IDLE_SCROLLS", "6")),
-        )
+    def _collect_products(self) -> None:
+        idle_limit = max(3, int(os.getenv("OZON_LINK_IDLE_SCROLLS", "7")))
         scroll_wait = max(
-            1,
-            int(os.getenv("OZON_SCROLL_WAIT_SECONDS", "4")),
+            0.8,
+            float(os.getenv("OZON_SCROLL_WAIT_SECONDS", "1.5")),
         )
         max_pages = max(1, int(os.getenv("OZON_MAX_PAGES", "10")))
         base_url = getattr(self.driver, "current_url", "") or self.category_url
@@ -187,31 +133,22 @@ class OzonLinkParser:
             if page_num > 1:
                 next_url = build_listing_page_url(base_url, page_num)
                 logger.info("Переход на страницу Ozon %s: %s", page_num, next_url)
-                if not self.selenium_manager.navigate_to_url(next_url):
-                    logger.warning("Не удалось загрузить страницу Ozon %s", page_num)
+                if not self._open_page(next_url):
                     break
 
-            no_new_items_count = 0
+            idle_scrolls = 0
             page_new_count = 0
-            scroll_num = 0
+            max_scrolls = max(
+                8,
+                int(os.getenv("OZON_MAX_SCROLLS", str(self.max_products * 3))),
+            )
 
-            while len(self.collected_links) < self.max_products:
-                scroll_num += 1
-                current_items = self._extract_all_links()
-
-                new_count = 0
-                for url, img_url in current_items.items():
-                    if (
-                        url not in seen_urls
-                        and len(self.collected_links) < self.max_products
-                    ):
-                        seen_urls.add(url)
-                        self.collected_links[url] = img_url
-                        new_count += 1
-                        page_new_count += 1
+            for scroll_num in range(1, max_scrolls + 1):
+                new_count = self._merge_new_items(self._extract_items_from_page())
+                page_new_count += new_count
 
                 logger.info(
-                    "Страница %s, скролл %s: +%s, всего %s/%s",
+                    "Selenium страница %s, скролл %s: +%s, всего %s/%s",
                     page_num,
                     scroll_num,
                     new_count,
@@ -219,27 +156,77 @@ class OzonLinkParser:
                     self.max_products,
                 )
 
-                if new_count == 0:
-                    no_new_items_count += 1
-                    if no_new_items_count >= no_new_limit:
-                        break
-                else:
-                    no_new_items_count = 0
-
                 if len(self.collected_links) >= self.max_products:
-                    break
+                    return
+
+                if new_count:
+                    idle_scrolls = 0
+                else:
+                    idle_scrolls += 1
+                    if idle_scrolls >= idle_limit:
+                        break
 
                 self._scroll_for_more()
                 time.sleep(scroll_wait)
 
-            if len(self.collected_links) >= self.max_products:
-                break
             if page_num > 1 and page_new_count == 0:
-                logger.info("Страница %s не дала новых товаров", page_num)
                 break
 
         if not self.collected_links:
-            self._save_debug_snapshot("no_links")
+            self._save_debug_snapshot("no_products")
+
+    def _merge_new_items(self, items: Dict[str, dict[str, Any]]) -> int:
+        new_count = 0
+        for url, payload in items.items():
+            if len(self.collected_links) >= self.max_products:
+                break
+            if url not in self.collected_links:
+                self.collected_links[url] = dict(payload or {})
+                new_count += 1
+            else:
+                self._merge_product_payload(
+                    self.collected_links,
+                    url,
+                    payload,
+                )
+        return new_count
+
+    def _extract_items_from_page(self) -> Dict[str, dict[str, Any]]:
+        items: Dict[str, dict[str, Any]] = {}
+
+        if not self.driver:
+            return items
+
+        try:
+            dom_items = self.driver.execute_script(_DOM_CARD_EXTRACTOR)
+            for item in dom_items or []:
+                self._add_product_link(
+                    items,
+                    str(item.get("href") or ""),
+                    str(item.get("text") or ""),
+                    str(item.get("image_url") or ""),
+                )
+        except Exception as exc:
+            logger.debug("DOM extraction failed: %s", exc)
+
+        for url, payload in self._extract_product_items_from_html().items():
+            self._merge_product_payload(items, url, payload)
+
+        return items
+
+    def _extract_product_items_from_html(self) -> Dict[str, dict[str, Any]]:
+        if not self.driver:
+            return {}
+        current_url = getattr(self.driver, "current_url", "") or ""
+        return extract_listing_items_from_html(
+            self.driver.page_source,
+            current_url or self.category_url,
+        )
+
+    def _extract_product_links_from_html(self, page_source: str | None = None):
+        if page_source is None:
+            page_source = self.driver.page_source if self.driver else ""
+        return extract_product_links_from_html(page_source)
 
     def _recover_links_from_current_page(self, reason: str) -> bool:
         if not self.driver:
@@ -248,168 +235,45 @@ class OzonLinkParser:
         items: Dict[str, dict[str, Any]] = {}
         current_url = getattr(self.driver, "current_url", "") or ""
         page_title = getattr(self.driver, "title", "") or ""
-
         self._add_product_link(items, current_url, page_title)
         for url, payload in self._extract_product_items_from_html().items():
             self._merge_product_payload(items, url, payload)
 
         if not items:
-            logger.warning(
-                "Не удалось восстановить ссылки %s: current_url=%s title=%r",
-                reason,
-                current_url,
-                page_title,
-            )
+            logger.warning("Не удалось восстановить ссылки %s", reason)
             return False
 
-        for url, payload in items.items():
-            if (
-                url not in self.collected_links
-                and len(self.collected_links) < self.max_products
-            ):
-                self.collected_links[url] = payload
-
+        self._merge_new_items(items)
         logger.warning(
-            "Ссылки восстановлены %s: +%s, всего %s/%s, current_url=%s",
+            "Ссылки восстановлены %s: всего %s/%s",
             reason,
-            len(items),
             len(self.collected_links),
             self.max_products,
-            current_url,
         )
         return bool(self.collected_links)
-
-    def _scroll_for_more(self):
-        try:
-            self.driver.execute_script(
-                """
-                const paginator = document.getElementById(
-                    'contentScrollPaginator'
-                );
-                if (paginator) {
-                    paginator.scrollIntoView({
-                        behavior: 'instant',
-                        block: 'end'
-                    });
-                }
-                const step = Math.max(
-                    Math.floor(window.innerHeight * 0.9),
-                    800
-                );
-                window.scrollBy(0, step);
-                window.scrollTo({
-                    top: Math.min(
-                        document.body.scrollHeight,
-                        window.scrollY + step * 2
-                    ),
-                    behavior: 'instant'
-                });
-                window.dispatchEvent(new Event('scroll', {bubbles: true}));
-                document.dispatchEvent(
-                    new WheelEvent('wheel', {
-                        deltaY: step * 2,
-                        bubbles: true,
-                        cancelable: true
-                    })
-                );
-                """
-            )
-        except Exception as e:
-            logger.debug("Не удалось выполнить JS-scroll: %s", e)
-
-    def _extract_all_links(self) -> Dict[str, dict[str, Any]]:
-        try:
-            items = {}
-            dom_items = self.driver.execute_script(
-                """
-                return Array.from(
-                    document.querySelectorAll('a[href*="/product/"]')
-                ).map(link => {
-                    let card = link.closest(
-                        '[class*="tile"], [data-widget], article'
-                    ) || link.parentElement;
-                    let root = link;
-                    for (let i = 0; i < 8 && root.parentElement; i += 1) {
-                        root = root.parentElement;
-                        const rootText = (
-                            root.innerText || root.textContent || ''
-                        ).replace(/\\s+/g, ' ').trim();
-                        const linkCount = root.querySelectorAll(
-                            'a[href*="/product/"]'
-                        ).length;
-                        const hasPrice = /(₸|тг|тенге)/i.test(rootText);
-                        if (
-                            hasPrice &&
-                            rootText.length >= 20 &&
-                            rootText.length <= 2500 &&
-                            linkCount <= 8
-                        ) {
-                            card = root;
-                            break;
-                        }
-                    }
-                    const img = link.querySelector('img')
-                        || (card ? card.querySelector('img') : null);
-                    const text = [
-                        link.getAttribute('aria-label') || '',
-                        link.getAttribute('title') || '',
-                        img ? (img.getAttribute('alt') || '') : '',
-                        link.innerText || link.textContent || '',
-                        card ? (card.innerText || card.textContent || '') : ''
-                    ].filter(Boolean).join('\\n');
-                    return {
-                        href: link.href || link.getAttribute('href') || '',
-                        text: text
-                    };
-                });
-                """
-            )
-            for item in dom_items or []:
-                self._add_product_link(
-                    items,
-                    item.get("href", ""),
-                    item.get("text", ""),
-                )
-
-            if len(items) < self.max_products:
-                for url, payload in self._extract_product_items_from_html().items():
-                    self._merge_product_payload(items, url, payload)
-
-            logger.debug(f"Извлечено ссылок на текущем экране: {len(items)}")
-            return items
-        except Exception as e:
-            logger.warning(f"Ошибка извлечения ссылок: {e}")
-            return {}
-
-    def _get_products_container(self):
-        try:
-            return self.driver.find_element(By.ID, "contentScrollPaginator")
-        except Exception:
-            return None
-
-    def _extract_product_links_from_html(self):
-        return extract_product_links_from_html(self.driver.page_source)
-
-    def _extract_product_items_from_html(self) -> Dict[str, dict[str, Any]]:
-        current_url = getattr(self.driver, "current_url", "") or ""
-        return extract_listing_items_from_html(
-            self.driver.page_source,
-            current_url or self.category_url,
-        )
 
     def _add_product_link(
         self,
         items: Dict[str, dict[str, Any]],
         href: str,
         card_text: str = "",
-    ):
+        image_url: str = "",
+    ) -> None:
         normalized = self._normalize_product_url(href)
         if not normalized or normalized in items:
             return
+
         items[normalized] = {
-            "title": self._extract_title_from_card_text(card_text),
-            "price": self._extract_price_from_card_text(card_text),
+            "title": extract_title_from_card_text(card_text),
+            "price": extract_price_from_card_text(card_text),
+            "image_url": image_url,
         }
+
+    def _extract_title_from_card_text(self, card_text: str) -> str:
+        return extract_title_from_card_text(card_text)
+
+    def _extract_price_from_card_text(self, card_text: str) -> int:
+        return extract_price_from_card_text(card_text)
 
     def _merge_product_payload(
         self,
@@ -424,71 +288,142 @@ class OzonLinkParser:
             return
 
         current = items[url]
-        if not isinstance(current, dict):
-            items[url] = dict(payload or {})
-            return
-
         for key in ("title", "price", "image_url"):
             if not current.get(key) and payload.get(key):
                 current[key] = payload[key]
 
-    def _extract_title_from_card_text(self, card_text: str) -> str:
-        return extract_title_from_card_text(card_text)
-
-    def _extract_price_from_card_text(self, card_text: str) -> int:
-        return extract_price_from_card_text(card_text)
-
-    def _normalize_product_url(self, href: str) -> str:
-        if not href:
-            return ""
-
-        current_url = getattr(self.driver, "current_url", "") or ""
-        return normalize_product_url(href, current_url or self.category_url)
-
-    def _save_debug_snapshot(self, reason: str = "debug"):
+    def _scroll_for_more(self) -> None:
+        if not self.driver:
+            return
         try:
-            safe_reason = re.sub(r"[^a-zA-Z0-9_-]+", "_", reason)[:40]
-            source_path = self.output_dir / f"{safe_reason}_page_source.html"
-            screenshot_path = self.output_dir / f"{safe_reason}_screenshot.png"
-
-            with open(source_path, "w", encoding="utf-8") as file:
-                file.write(self.driver.page_source)
-            self.driver.save_screenshot(str(screenshot_path))
-
-            logger.warning(
-                f"Ссылки не найдены. Debug сохранен: "
-                f"{source_path}, {screenshot_path}"
+            self.driver.execute_script(
+                """
+                const step = Math.max(Math.floor(window.innerHeight * 1.4), 1200);
+                const paginator = document.getElementById('contentScrollPaginator');
+                if (paginator) {
+                    paginator.scrollIntoView({behavior: 'instant', block: 'end'});
+                }
+                window.scrollBy(0, step);
+                window.scrollTo({
+                    top: Math.min(document.body.scrollHeight, window.scrollY + step),
+                    behavior: 'instant'
+                });
+                window.dispatchEvent(new Event('scroll', {bubbles: true}));
+                document.dispatchEvent(new WheelEvent('wheel', {
+                    deltaY: step,
+                    bubbles: true,
+                    cancelable: true
+                }));
+                """
             )
-        except Exception as e:
-            logger.warning(f"Не удалось сохранить debug страницы: {e}")
+        except Exception as exc:
+            logger.debug("Scroll failed: %s", exc)
 
-    def _create_output_folder(self):
+    def _normalize_product_url(self, href: str, base_url: str = "") -> str:
+        current_url = ""
+        if self.driver:
+            current_url = getattr(self.driver, "current_url", "") or ""
+        return normalize_product_url(
+            href,
+            base_url or current_url or self.category_url,
+        )
+
+    def get_article_from_url(self, url: str) -> str:
+        return self._extract_article_from_url(url)
+
+    def _extract_article_from_url(self, url: str) -> str:
+        match = re.search(r"/product/(?:[^/]+-)?(\d+)/?", url or "")
+        return match.group(1) if match else ""
+
+    def _extract_category_name(self, url: str) -> str:
+        try:
+            match = re.search(r"/category/([^/]+)-(\d+)/", url)
+            if match:
+                return match.group(1).replace("-", "_")
+            if "/search/" in url or "/s/" in url:
+                return "search"
+            if "/seller/" in url:
+                return "seller"
+            return "unknown_category"
+        except Exception:
+            return "unknown_category"
+
+    def _create_output_folder(self) -> None:
         base_output_dir = Path(__file__).parent.parent.parent / "output"
         self.output_dir = base_output_dir / self.output_folder
         self.output_dir.mkdir(parents=True, exist_ok=True)
 
     def _save_links(self) -> bool:
         try:
-            filename = f"links_{self.output_folder}.json"
-            file_path = self.output_dir / filename
-            links_to_save = dict(
-                list(self.collected_links.items())[: self.max_products]
+            if not self.output_dir:
+                self._create_output_folder()
+            file_path = self.output_dir / f"links_{self.output_folder}.json"
+            file_path.write_text(
+                json.dumps(
+                    dict(list(self.collected_links.items())[: self.max_products]),
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
             )
-
-            with open(file_path, "w", encoding="utf-8") as file:
-                json.dump(links_to_save, file, ensure_ascii=False, indent=2)
+            logger.info("Ссылки Ozon сохранены: %s", file_path.resolve())
             return True
-        except Exception as e:
-            logger.error(f"Ошибка сохранения ссылок: {e}")
+        except Exception as exc:
+            logger.error("Ошибка сохранения ссылок Ozon: %s", exc)
             return False
 
-    def _cleanup(self):
-        if self.selenium_manager:
-            self.selenium_manager.close()
-
-    def get_article_from_url(self, url: str) -> str:
+    def _save_debug_snapshot(self, reason: str) -> None:
+        if not self.driver:
+            return
         try:
-            match = re.search(r"/product/(?:[^/]+-)?(\d+)/?", url)
-            return match.group(1) if match else ""
-        except Exception:
-            return ""
+            if not self.output_dir:
+                self._create_output_folder()
+            safe_reason = re.sub(r"[^a-zA-Z0-9_-]+", "_", reason)[:40]
+            source_path = self.output_dir / f"{safe_reason}_page_source.html"
+            screenshot_path = self.output_dir / f"{safe_reason}_screenshot.png"
+            source_path.write_text(self.driver.page_source, encoding="utf-8")
+            self.driver.save_screenshot(str(screenshot_path))
+            logger.warning(
+                "Debug Ozon сохранен: %s, %s",
+                source_path.resolve(),
+                screenshot_path.resolve(),
+            )
+        except Exception as exc:
+            logger.warning("Не удалось сохранить debug Ozon: %s", exc)
+
+    def _cleanup(self) -> None:
+        self.selenium_manager.close()
+
+
+_DOM_CARD_EXTRACTOR = """
+return Array.from(document.querySelectorAll('a[href*="/product/"]')).map(link => {
+    let card = link.closest('[class*="tile"], [data-widget], article')
+        || link.parentElement;
+    let root = link;
+    for (let i = 0; i < 10 && root.parentElement; i += 1) {
+        root = root.parentElement;
+        const text = (root.innerText || root.textContent || '')
+            .replace(/\\s+/g, ' ')
+            .trim();
+        const productLinks = root.querySelectorAll('a[href*="/product/"]').length;
+        const hasPrice = /(₸|тг|тенге)/i.test(text);
+        if (hasPrice && text.length >= 20 && text.length <= 3500 && productLinks <= 10) {
+            card = root;
+            break;
+        }
+    }
+    const img = link.querySelector('img') || (card ? card.querySelector('img') : null);
+    const text = [
+        link.getAttribute('aria-label') || '',
+        link.getAttribute('title') || '',
+        img ? (img.getAttribute('alt') || '') : '',
+        link.innerText || link.textContent || '',
+        card ? (card.innerText || card.textContent || '') : ''
+    ].filter(Boolean).join('\\n');
+    return {
+        href: link.href || link.getAttribute('href') || '',
+        image_url: img ? (img.currentSrc || img.src || img.getAttribute('src') || '') : '',
+        text
+    };
+});
+"""

@@ -11,7 +11,6 @@ from src.parsers.ozon_listing_data import (
 )
 from src.parsers.ozon_playwright_parser import OzonPlaywrightParser
 from src.parsers.product_parser import (
-    ProductInfo,
     ProductWorker,
     OzonProductParser,
     extract_product_page_fallback,
@@ -240,33 +239,28 @@ class OzonProductWorkerTests(unittest.TestCase):
             "https://img.test/item.jpg",
         )
 
-    def test_extracts_title_and_price_from_ozon_widget_state(self):
-        html = r'''
+    def test_extracts_price_from_product_page_text(self):
+        html = """
         <html><body>
-          <script>
-          window.__ozon = {
-            "webProductHeading-123-default-1":"{\"title\":\"REDMOND RMC-M52 мультиварка\"}",
-            "webPrice-123-default-1":"{\"cardPrice\":\"34 990 ₸\",\"originalPrice\":\"39 990 ₸\"}"
-          };
-          </script>
+          <h1>REDMOND RMC-M52 мультиварка</h1>
+          <div>34 990 ₸</div>
         </body></html>
-        '''
+        """
 
         result = extract_product_page_fallback(html)
 
         self.assertEqual(result["title"], "REDMOND RMC-M52 мультиварка")
-        self.assertEqual(result["prices"], [34990, 39990])
+        self.assertEqual(result["prices"], [34990])
 
-    def test_product_worker_uses_category_metadata_when_card_parse_fails(self):
+    def test_product_worker_uses_listing_metadata(self):
         worker = ProductWorker(1)
-        product = worker._build_from_link_metadata(
+        product = worker._build_from_listing(
             "4103859568",
             {
                 "title": "REDMOND RMC-M52 мультиварка",
                 "price": 34990,
                 "image_url": "https://img.test/item.jpg",
             },
-            "Не удалось загрузить карточку товара",
         )
 
         self.assertTrue(product.success)
@@ -274,97 +268,17 @@ class OzonProductWorkerTests(unittest.TestCase):
         self.assertEqual(product.price, 34990)
         self.assertEqual(product.image_url, "https://img.test/item.jpg")
 
-    def test_product_worker_builds_kazakhstan_composer_api_url(self):
+    def test_product_worker_marks_incomplete_listing_data(self):
         worker = ProductWorker(1)
-
-        api_url = worker._build_product_api_url(
-            "https://ozon.kz/product/redmond-rmc-m52-4103859568/?from=share"
-        )
-
-        self.assertTrue(
-            api_url.startswith(
-                "https://www.ozon.kz/api/composer-api.bx/page/json/v2?"
-            )
-        )
-        self.assertIn(
-            "url=%2Fproduct%2Fredmond-rmc-m52-4103859568%2F%3Ffrom%3Dshare",
-            api_url,
-        )
-        self.assertIn("layout_container=pdpPage2column", api_url)
-
-    def test_product_worker_uses_composer_api_before_browser(self):
-        worker = ProductWorker(1)
-        response = SimpleNamespace(
-            status_code=200,
-            text=r'''
-            {
-              "widgetStates": {
-                "webStickyProducts-123": "{\"name\":\"REDMOND RMC-M52 мультиварка\",\"coverImageUrl\":\"https://img.test/item.jpg\"}",
-                "webPrice-123": "{\"cardPrice\":\"34 990 ₸\",\"originalPrice\":\"39 990 ₸\"}"
-              }
-            }
-            ''',
-        )
-
-        with (
-            patch(
-                "src.parsers.product_parser.requests.get",
-                return_value=response,
-            ) as get,
-            patch.object(worker, "_ensure_driver") as ensure_driver,
-        ):
-            product = worker._parse_single_product(
-                "4103859568",
-                "https://ozon.kz/product/redmond-rmc-m52-4103859568/",
-            )
-
-        get.assert_called_once()
-        ensure_driver.assert_not_called()
-        self.assertTrue(product.success)
-        self.assertEqual(product.name, "REDMOND RMC-M52 мультиварка")
-        self.assertEqual(product.price, 34990)
-        self.assertEqual(product.original_price, 39990)
-        self.assertEqual(product.image_url, "https://img.test/item.jpg")
-
-    def test_product_worker_prefers_card_price_from_composer_api(self):
-        worker = ProductWorker(1)
-        product = worker._parse_json_response(
+        product = worker._build_from_listing(
             "4103859568",
-            r'''
-            {
-              "widgetStates": {
-                "webStickyProducts-123": "{\"name\":\"REDMOND RMC-M52 мультиварка\"}",
-                "webPrice-123": "{\"cardPrice\":\"29 990 ₸\",\"price\":\"34 990 ₸\",\"originalPrice\":\"39 990 ₸\"}"
-              }
-            }
-            ''',
+            {"title": "REDMOND RMC-M52 мультиварка", "price": 0},
         )
 
-        self.assertTrue(product.success)
-        self.assertEqual(product.card_price, 29990)
-        self.assertEqual(product.price, 29990)
-        self.assertEqual(product.original_price, 39990)
+        self.assertFalse(product.success)
+        self.assertIn("цена", product.error)
 
-    def test_product_worker_replaces_generic_ozon_title_from_metadata(self):
-        worker = ProductWorker(1)
-        product = ProductInfo(
-            article="4103859568",
-            name="Ozon интернет-магазин",
-            price=34990,
-        )
-
-        worker._apply_link_metadata(
-            product,
-            {
-                "title": "REDMOND RMC-M52 мультиварка",
-                "price": 34990,
-            },
-        )
-
-        self.assertEqual(product.name, "REDMOND RMC-M52 мультиварка")
-        self.assertTrue(product.success)
-
-    def test_product_parser_skips_product_pages_when_listing_has_all_data(self):
+    def test_product_parser_uses_listing_data_without_product_pages(self):
         parser = OzonProductParser(max_workers=2)
         product_links = {
             "https://ozon.kz/product/test-10001/": {
@@ -379,20 +293,16 @@ class OzonProductWorkerTests(unittest.TestCase):
             },
         }
 
-        with (
-            patch.object(parser, "_parse_single_worker") as parse_single,
-            patch.object(parser, "_parse_multiple_workers") as parse_multiple,
-        ):
+        with patch.object(parser, "_parse_incomplete_products") as fallback:
             results = parser.parse_products(product_links)
 
-        parse_single.assert_not_called()
-        parse_multiple.assert_not_called()
+        fallback.assert_not_called()
         self.assertEqual([product.article for product in results], ["10001", "10002"])
         self.assertTrue(all(product.success for product in results))
         self.assertEqual(results[0].name, "REDMOND RMC-M52")
         self.assertEqual(results[0].price, 34990)
 
-    def test_product_parser_opens_only_items_missing_listing_data(self):
+    def test_product_parser_does_not_open_missing_items_by_default(self):
         parser = OzonProductParser(max_workers=2)
         product_links = {
             "https://ozon.kz/product/test-10001/": {
@@ -404,49 +314,32 @@ class OzonProductWorkerTests(unittest.TestCase):
                 "price": 0,
             },
         }
-        parsed_missing = ProductInfo(
-            article="10002",
-            name="REDMOND RK-G196",
-            price=12990,
-            card_price=12990,
-            success=True,
-        )
 
-        with patch.object(
-            parser,
-            "_parse_single_worker",
-            return_value=[parsed_missing],
-        ) as parse_single:
+        with patch.object(parser, "_parse_incomplete_products") as fallback:
             results = parser.parse_products(product_links)
 
-        parse_single.assert_called_once_with(["10002"])
+        fallback.assert_not_called()
         self.assertEqual([product.article for product in results], ["10001", "10002"])
         self.assertEqual(results[0].name, "REDMOND RMC-M52")
-        self.assertEqual(results[1].name, "REDMOND RK-G196")
+        self.assertFalse(results[1].success)
+        self.assertIn("название", results[1].error)
 
-    def test_uses_at_most_two_product_workers_by_default(self):
-        parser = OzonProductParser(max_workers=10, user_id="123")
+    def test_product_parser_can_use_explicit_page_fallback(self):
+        parser = OzonProductParser(max_workers=2)
         product_links = {
-            f"https://ozon.kz/product/test-{article}/": ""
-            for article in range(10000, 10008)
+            "https://ozon.kz/product/test-10002/": {
+                "title": "",
+                "price": 0,
+            },
         }
 
         with (
-            patch(
-                "src.parsers.product_parser.resource_manager."
-                "start_parsing_session",
-                return_value=5,
-            ),
-            patch.object(
-                parser,
-                "_parse_multiple_workers",
-                return_value=[],
-            ) as parse_multiple,
+            patch.dict("os.environ", {"OZON_PRODUCT_PAGE_FALLBACK": "1"}),
+            patch.object(parser, "_parse_incomplete_products", return_value=[]) as fallback,
         ):
             parser.parse_products(product_links)
 
-        parse_multiple.assert_called_once()
-        self.assertEqual(parse_multiple.call_args.args[1], 2)
+        fallback.assert_called_once()
 
 
 class OzonSellerWorkerTests(unittest.TestCase):

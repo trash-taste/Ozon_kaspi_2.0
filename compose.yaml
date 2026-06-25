@@ -10,11 +10,11 @@ services:
     environment:
       TZ: Asia/Qyzylorda
       CHROME_BIN: /usr/bin/chromium
-      PLAYWRIGHT_CHROMIUM_PATH: /usr/bin/chromium
-      OZON_USE_PLAYWRIGHT: "1"
+      CHROMEDRIVER_PATH: /usr/bin/chromedriver
       PYTHONUNBUFFERED: "1"
       OZON_PAGE_LOAD_TIMEOUT: "30"
       OZON_ANTIBOT_TIMEOUT: "45"
+      OZON_PRODUCT_PAGE_FALLBACK: "0"
       OZON_PRODUCT_WORKERS: "2"
       OZON_SELLER_WORKERS: "2"
       KASPI_REQUEST_TIMEOUT: "12"
