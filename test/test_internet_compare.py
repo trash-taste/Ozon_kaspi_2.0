@@ -259,7 +259,7 @@ class InternetAsyncTests(unittest.IsolatedAsyncioTestCase):
                     }
                 ]
             ),
-        ):
+        ), patch.dict("os.environ", {"INTERNET_USE_KASPI_FALLBACK": "1"}):
             results = await internet_compare.compare_with_internet(
                 [product],
                 commission_rate=16,
@@ -268,6 +268,29 @@ class InternetAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["source"], "kaspi.kz")
         self.assertEqual(results[0]["commission"], 3200.0)
+
+    async def test_kaspi_fallback_is_disabled_by_default(self):
+        product = {
+            "title": "REDMOND RMC-M52",
+            "price": 10000,
+            "url": "ozon",
+        }
+        kaspi_search = AsyncMock(return_value=[])
+        with patch(
+            "services.internet_compare.search_internet_sources",
+            new=AsyncMock(return_value=[]),
+        ), patch(
+            "services.kaspi_compare.search_kaspi_product",
+            new=kaspi_search,
+        ), patch.dict("os.environ", {"INTERNET_USE_KASPI_FALLBACK": "0"}):
+            results = await internet_compare.compare_with_internet(
+                [product],
+                commission_rate=16,
+            )
+
+        kaspi_search.assert_not_called()
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0]["matched"])
 
     async def test_compare_uses_search_pages_and_returns_result(self):
         product = {

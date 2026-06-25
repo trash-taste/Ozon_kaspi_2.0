@@ -20,7 +20,7 @@ MODEL_MATCH_BONUS = 15.0
 SEARCH_RETRIES = 3
 PAGE_RETRIES = 2
 MAX_SEARCH_RESULTS = 12
-MAX_CONCURRENT_PAGES = 4
+MAX_CONCURRENT_PAGES = int(os.getenv("INTERNET_PAGE_CONCURRENCY", "2"))
 MAX_CONCURRENT_PRODUCTS = int(
     os.getenv("INTERNET_PRODUCT_CONCURRENCY", "2")
 )
@@ -84,6 +84,10 @@ def _normalize_text(value: Any) -> str:
         for word in re.sub(r"\s+", " ", text).strip().split()
     ]
     return " ".join(words)
+
+
+def _use_kaspi_fallback() -> bool:
+    return os.getenv("INTERNET_USE_KASPI_FALLBACK", "0").strip() == "1"
 
 
 def _extract_model_tokens(value: Any) -> list[str]:
@@ -591,7 +595,7 @@ async def _compare_one(
         for candidate in page_candidates
     ]
     selected = _select_candidate(product, candidates)
-    if selected is None:
+    if selected is None and _use_kaspi_fallback():
         try:
             from services.kaspi_compare import search_kaspi_product
 
@@ -612,6 +616,11 @@ async def _compare_one(
                 "Ошибка резервного поиска Kaspi: %s",
                 product.get("title"),
             )
+    elif selected is None:
+        logger.debug(
+            "Резервный поиск Kaspi отключен для интернет-сравнения: %s",
+            product.get("title"),
+        )
     if selected is None:
         if min_roi is None:
             return _build_unmatched_result(product)
@@ -691,11 +700,15 @@ async def compare_with_internet(
                     PRODUCT_TIMEOUT_SECONDS,
                     product.get("title"),
                 )
+                if min_roi_decimal is None:
+                    return _build_unmatched_result(product)
             except Exception:
                 logger.exception(
                     "Ошибка интернет-сравнения: %s",
                     product.get("title"),
                 )
+                if min_roi_decimal is None:
+                    return _build_unmatched_result(product)
             return None
 
     async with aiohttp.ClientSession(

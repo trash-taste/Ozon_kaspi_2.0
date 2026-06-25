@@ -9,9 +9,11 @@ from typing import Any, Dict, List
 from bs4 import BeautifulSoup
 
 from ..utils.selenium_manager import SeleniumManager
-from .ozon_listing_data import extract_price_from_card_text
+from .ozon_listing_data import decode_ozon_source, extract_price_from_card_text
 
 logger = logging.getLogger(__name__)
+
+PRODUCT_PAGE_MODES = {"always", "missing", "off"}
 
 
 @dataclass
@@ -33,6 +35,7 @@ class ProductInfo:
 def extract_product_page_fallback(page_source: str) -> Dict[str, object]:
     """Extract minimal product data from an already loaded product page."""
     soup = BeautifulSoup(page_source or "", "html.parser")
+    decoded_source = decode_ozon_source(page_source or "")
     title = ""
     image_url = ""
     prices: list[int] = []
@@ -88,9 +91,14 @@ def extract_product_page_fallback(page_source: str) -> Dict[str, object]:
                     if price and price not in prices:
                         prices.append(price)
 
-    page_text_price = extract_price_from_card_text(soup.get_text("\n"))
-    if page_text_price and page_text_price not in prices:
-        prices.append(page_text_price)
+    targeted_prices = _extract_product_page_prices(soup, decoded_source)
+    if targeted_prices:
+        prices = _ordered_unique([*targeted_prices, *prices])
+
+    if not prices:
+        page_text_price = extract_price_from_card_text(soup.get_text("\n"))
+        if page_text_price:
+            prices.append(page_text_price)
 
     return {
         "title": _clean_text(unescape(title)),
@@ -100,16 +108,18 @@ def extract_product_page_fallback(page_source: str) -> Dict[str, object]:
 
 
 class ProductWorker:
-    """Optional product-page fallback worker.
+    """Product-page parser with listing data as a fallback."""
 
-    Normal runs should not reach this class because listing cards already
-    carry the title and price. It exists only for incomplete cards.
-    """
-
-    def __init__(self, worker_id: int, headless: bool = True):
+    def __init__(
+        self,
+        worker_id: int,
+        headless: bool = True,
+        page_mode: str | None = None,
+    ):
         self.worker_id = worker_id
         self.selenium_manager = SeleniumManager(headless=headless)
         self.driver = None
+        self.page_mode = _normalize_product_page_mode(page_mode)
 
     def parse_products(
         self,
@@ -129,22 +139,30 @@ class ProductWorker:
         metadata: Dict[str, Any] | None = None,
     ) -> ProductInfo:
         product = self._build_from_listing(article, metadata or {})
-        if product.success:
-            return product
 
-        if os.getenv("OZON_PRODUCT_PAGE_FALLBACK", "0") != "1":
+        if self.page_mode == "off":
             product.error = product.error or "Нет названия или цены в листинге"
             return product
 
+        if self.page_mode == "missing" and product.success:
+            return product
+
         if not product_url:
-            product.error = "Нет ссылки товара"
+            product.error = product.error or "Нет ссылки товара"
             return product
 
         try:
             if not self.driver:
                 self.driver = self.selenium_manager.create_driver()
             if not self.selenium_manager.navigate_to_url(product_url):
-                product.error = "Не удалось открыть карточку товара"
+                if not product.success:
+                    product.error = "Не удалось открыть карточку товара"
+                else:
+                    logger.warning(
+                        "Товар %s: не удалось открыть карточку, оставлена цена "
+                        "из листинга",
+                        article,
+                    )
                 return product
             page_data = extract_product_page_fallback(self.driver.page_source)
             if page_data["title"]:
@@ -152,16 +170,35 @@ class ProductWorker:
             if page_data["image_url"] and not product.image_url:
                 product.image_url = str(page_data["image_url"])
             prices = page_data["prices"]
-            if prices and not product.price:
+            if prices:
                 product.card_price = int(prices[0])
                 product.price = int(prices[0])
                 higher = [price for price in prices[1:] if price > product.price]
                 product.original_price = max(higher) if higher else 0
+                logger.info(
+                    "Товар %s: цена Ozon взята из карточки товара: %s",
+                    article,
+                    product.price,
+                )
+            elif product.success:
+                logger.warning(
+                    "Товар %s: цена в карточке не найдена, оставлена цена "
+                    "из листинга: %s",
+                    article,
+                    product.price,
+                )
             product.success = bool(product.name and product.price)
             product.error = "" if product.success else "Неполные данные товара"
             return product
         except Exception as exc:
-            product.error = f"Ошибка карточки товара: {exc}"
+            if product.success:
+                logger.warning(
+                    "Товар %s: ошибка карточки, оставлена цена из листинга: %s",
+                    article,
+                    exc,
+                )
+            else:
+                product.error = f"Ошибка карточки товара: {exc}"
             return product
 
     def _build_from_listing(
@@ -207,14 +244,26 @@ class OzonProductParser:
         self.max_workers = max_workers
         self.user_id = user_id
         self.headless = headless
+        self.page_mode = _normalize_product_page_mode()
         logger.info(
-            "OzonProductParser работает в режиме listing-first "
+            "OzonProductParser работает в режиме product-page=%s "
             "(max_workers=%s user=%s)",
+            self.page_mode,
             max_workers,
             user_id,
         )
 
     def parse_products(self, product_links: Dict[str, Any]) -> List[ProductInfo]:
+        if self.page_mode == "always":
+            products = self._parse_products_from_pages(product_links)
+            successful = len([product for product in products if product.success])
+            logger.info(
+                "Из карточек Ozon получено товаров с названием и ценой: %s/%s",
+                successful,
+                len(products),
+            )
+            return products
+
         products = []
         incomplete: dict[str, Any] = {}
 
@@ -230,7 +279,7 @@ class OzonProductParser:
                 incomplete[url] = payload
                 products.append(product)
 
-        if incomplete and os.getenv("OZON_PRODUCT_PAGE_FALLBACK", "0") == "1":
+        if incomplete and self.page_mode == "missing":
             fallback_by_article = {
                 item.article: item
                 for item in self._parse_incomplete_products(incomplete)
@@ -257,6 +306,25 @@ class OzonProductParser:
             metadata,
         )
 
+    def _parse_products_from_pages(
+        self,
+        product_links: Dict[str, Any],
+    ) -> List[ProductInfo]:
+        articles = [
+            self._extract_article_from_url(url)
+            for url in product_links
+            if self._extract_article_from_url(url)
+        ]
+        worker = ProductWorker(
+            1,
+            headless=self.headless,
+            page_mode=self.page_mode,
+        )
+        try:
+            return worker.parse_products(articles, product_links)
+        finally:
+            worker.close()
+
     def _parse_incomplete_products(
         self,
         product_links: Dict[str, Any],
@@ -266,7 +334,11 @@ class OzonProductParser:
             for url in product_links
             if self._extract_article_from_url(url)
         ]
-        worker = ProductWorker(1, headless=self.headless)
+        worker = ProductWorker(
+            1,
+            headless=self.headless,
+            page_mode=self.page_mode,
+        )
         try:
             return worker.parse_products(articles, product_links)
         finally:
@@ -305,6 +377,86 @@ def _extract_price_number(value: Any) -> int:
         return 0
     price = int(cleaned)
     return price if 100 <= price <= 10_000_000 else 0
+
+
+def _extract_product_page_prices(
+    soup: BeautifulSoup,
+    decoded_source: str,
+) -> list[int]:
+    sale_keys = (
+        "cardPrice",
+        "finalPrice",
+        "currentPrice",
+        "salePrice",
+        "discountPrice",
+        "discountedPrice",
+        "priceWithCard",
+        "price",
+    )
+    original_keys = (
+        "originalPrice",
+        "oldPrice",
+        "crossedPrice",
+        "basePrice",
+        "priceWithoutDiscount",
+    )
+    sale_prices: list[int] = []
+    original_prices: list[int] = []
+
+    for widget in soup.select('[data-widget*="webPrice"], [data-widget*="price"]'):
+        price = extract_price_from_card_text(widget.get_text("\n"))
+        if price:
+            sale_prices.append(price)
+
+    sale_prices.extend(_extract_prices_for_keys(decoded_source, sale_keys))
+    original_prices.extend(_extract_prices_for_keys(decoded_source, original_keys))
+
+    sale_prices = _ordered_unique(sale_prices)
+    original_prices = [
+        price
+        for price in _ordered_unique(original_prices)
+        if not sale_prices or price > min(sale_prices)
+    ]
+    if sale_prices:
+        return [min(sale_prices), *original_prices]
+    return original_prices
+
+
+def _extract_prices_for_keys(source: str, keys: tuple[str, ...]) -> list[int]:
+    prices: list[int] = []
+    for key in keys:
+        pattern = (
+            rf'"{re.escape(key)}"\s*:\s*'
+            r'(?:"((?:\\.|[^"\\]){1,120})"|(\d{3,10}))'
+        )
+        for match in re.finditer(pattern, source, re.IGNORECASE):
+            price = _extract_price_number(match.group(1) or match.group(2))
+            if price:
+                prices.append(price)
+    return _ordered_unique(prices)
+
+
+def _ordered_unique(values: list[int]) -> list[int]:
+    result: list[int] = []
+    for value in values:
+        if value and value not in result:
+            result.append(value)
+    return result
+
+
+def _normalize_product_page_mode(value: str | None = None) -> str:
+    raw = (value or os.getenv("OZON_PRODUCT_PAGE_MODE") or "").strip().casefold()
+    if not raw and os.getenv("OZON_PRODUCT_PAGE_FALLBACK") == "1":
+        raw = "missing"
+    if not raw:
+        raw = "always"
+    if raw not in PRODUCT_PAGE_MODES:
+        logger.warning(
+            "Неизвестный OZON_PRODUCT_PAGE_MODE=%r, используется always",
+            raw,
+        )
+        return "always"
+    return raw
 
 
 def _walk_json_ld_products(value: Any) -> List[Dict[str, Any]]:

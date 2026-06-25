@@ -278,8 +278,55 @@ class OzonProductWorkerTests(unittest.TestCase):
         self.assertFalse(product.success)
         self.assertIn("цена", product.error)
 
-    def test_product_parser_uses_listing_data_without_product_pages(self):
+    def test_product_worker_page_price_overrides_listing_price(self):
+        worker = ProductWorker(1, page_mode="always")
+        worker.driver = SimpleNamespace(
+            page_source="""
+            <html><body>
+              <h1>REDMOND RMC-M52 карточка</h1>
+              <div data-widget="webPrice">22 222 ₸</div>
+            </body></html>
+            """
+        )
+
+        with patch.object(
+            worker.selenium_manager,
+            "navigate_to_url",
+            return_value=True,
+        ):
+            product = worker._parse_single_product(
+                "4103859568",
+                "https://ozon.kz/product/test-4103859568/",
+                {
+                    "title": "REDMOND RMC-M52 листинг",
+                    "price": 11111,
+                    "image_url": "https://img.test/item.jpg",
+                },
+            )
+
+        self.assertTrue(product.success)
+        self.assertEqual(product.name, "REDMOND RMC-M52 карточка")
+        self.assertEqual(product.price, 22222)
+
+    def test_product_parser_opens_product_pages_by_default(self):
         parser = OzonProductParser(max_workers=2)
+        product_links = {
+            "https://ozon.kz/product/test-10001/": {
+                "title": "REDMOND RMC-M52",
+                "price": 34990,
+            },
+        }
+
+        with patch.object(
+            parser,
+            "_parse_products_from_pages",
+            return_value=[],
+        ) as parse_pages:
+            parser.parse_products(product_links)
+
+        parse_pages.assert_called_once()
+
+    def test_product_parser_uses_listing_data_when_page_mode_is_off(self):
         product_links = {
             "https://ozon.kz/product/test-10001/": {
                 "title": "REDMOND RMC-M52",
@@ -293,6 +340,8 @@ class OzonProductWorkerTests(unittest.TestCase):
             },
         }
 
+        with patch.dict("os.environ", {"OZON_PRODUCT_PAGE_MODE": "off"}):
+            parser = OzonProductParser(max_workers=2)
         with patch.object(parser, "_parse_incomplete_products") as fallback:
             results = parser.parse_products(product_links)
 
@@ -302,8 +351,7 @@ class OzonProductWorkerTests(unittest.TestCase):
         self.assertEqual(results[0].name, "REDMOND RMC-M52")
         self.assertEqual(results[0].price, 34990)
 
-    def test_product_parser_does_not_open_missing_items_by_default(self):
-        parser = OzonProductParser(max_workers=2)
+    def test_product_parser_does_not_open_missing_items_when_page_mode_is_off(self):
         product_links = {
             "https://ozon.kz/product/test-10001/": {
                 "title": "REDMOND RMC-M52",
@@ -315,6 +363,8 @@ class OzonProductWorkerTests(unittest.TestCase):
             },
         }
 
+        with patch.dict("os.environ", {"OZON_PRODUCT_PAGE_MODE": "off"}):
+            parser = OzonProductParser(max_workers=2)
         with patch.object(parser, "_parse_incomplete_products") as fallback:
             results = parser.parse_products(product_links)
 
@@ -324,8 +374,7 @@ class OzonProductWorkerTests(unittest.TestCase):
         self.assertFalse(results[1].success)
         self.assertIn("название", results[1].error)
 
-    def test_product_parser_can_use_explicit_page_fallback(self):
-        parser = OzonProductParser(max_workers=2)
+    def test_product_parser_can_use_missing_page_mode(self):
         product_links = {
             "https://ozon.kz/product/test-10002/": {
                 "title": "",
@@ -334,11 +383,19 @@ class OzonProductWorkerTests(unittest.TestCase):
         }
 
         with (
-            patch.dict("os.environ", {"OZON_PRODUCT_PAGE_FALLBACK": "1"}),
+            patch.dict("os.environ", {"OZON_PRODUCT_PAGE_MODE": "missing"}),
+            patch.object(
+                OzonProductParser,
+                "_parse_products_from_pages",
+            ) as parse_pages,
+        ):
+            parser = OzonProductParser(max_workers=2)
+        with (
             patch.object(parser, "_parse_incomplete_products", return_value=[]) as fallback,
         ):
             parser.parse_products(product_links)
 
+        parse_pages.assert_not_called()
         fallback.assert_called_once()
 
 
