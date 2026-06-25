@@ -49,7 +49,6 @@ FIELD_NAMES = {
     'price': 'Цена',
     'original_price': 'Старая цена',
     'product_url': 'Ссылка на товар',
-    'image_url': 'Ссылка на изображение',
     'orders_count': 'Количество заказов',
     'reviews_count': 'Количество отзывов',
     'average_rating': 'Рейтинг',

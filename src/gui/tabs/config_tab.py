@@ -256,8 +256,8 @@ class ConfigTab:
                     
                     # Если настроек нет, создаем базовые
                     if f"{user_prefix}SELECTED_FIELDS" not in existing_config:
-                        f.write(f"{user_prefix}SELECTED_FIELDS=name,company_name,product_url,image_url\n")
-                        f.write(f"{user_prefix}FIELD_ORDER=name,company_name,product_url,image_url\n")
+                        f.write(f"{user_prefix}SELECTED_FIELDS=name,company_name,product_url\n")
+                        f.write(f"{user_prefix}FIELD_ORDER=name,company_name,product_url\n")
                         f.write(f"{user_prefix}DEFAULT_COUNT=500\n")
             
             messagebox.showinfo("Успех", f"Настройки сохранены для {len(user_ids)} пользователей!")

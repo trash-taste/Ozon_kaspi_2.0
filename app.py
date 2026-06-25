@@ -24,7 +24,7 @@ if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
-DEFAULT_FIELDS = ["name", "company_name", "product_url", "image_url"]
+DEFAULT_FIELDS = ["name", "company_name", "product_url"]
 ALL_FIELDS = [
     "article",
     "name",
@@ -35,7 +35,6 @@ ALL_FIELDS = [
     "price",
     "original_price",
     "product_url",
-    "image_url",
     "orders_count",
     "reviews_count",
     "average_rating",
@@ -52,7 +51,7 @@ def parse_args():
         "-f",
         "--fields",
         default=",".join(DEFAULT_FIELDS),
-        help="Поля через запятую или all. По умолчанию: name,company_name,product_url,image_url",
+        help="Поля через запятую или all. По умолчанию: name,company_name,product_url",
     )
     parser.add_argument("--headed", action="store_true", help="Показывать окно Chrome")
     parser.add_argument(

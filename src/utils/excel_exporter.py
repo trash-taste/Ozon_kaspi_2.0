@@ -41,8 +41,8 @@ class ExcelExporter:
                 headers = [field_mapping[field][0] for field in selected_fields if field in field_mapping]
                 field_extractors = [field_mapping[field][1] for field in selected_fields if field in field_mapping]
             else:
-                # По умолчанию: название товара, название компании, ссылка на товар и изображение
-                default_fields = ['name', 'company_name', 'product_url', 'image_url']
+                # По умолчанию: название товара, название компании и ссылка.
+                default_fields = ['name', 'company_name', 'product_url']
                 headers = [field_mapping[field][0] for field in default_fields]
                 field_extractors = [field_mapping[field][1] for field in default_fields]
             

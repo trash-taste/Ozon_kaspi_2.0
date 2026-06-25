@@ -17,14 +17,24 @@ class Database:
         default_count_key = f"USER_{user_id}_DEFAULT_COUNT"
         
         if selected_fields_key in config and field_order_key in config:
+            selected_fields = [
+                field
+                for field in config[selected_fields_key].split(',')
+                if field and field != 'image_url'
+            ]
+            field_order = [
+                field
+                for field in config[field_order_key].split(',')
+                if field and field != 'image_url'
+            ]
             return {
-                'selected_fields': config[selected_fields_key].split(',') if config[selected_fields_key] else [],
-                'field_order': config[field_order_key].split(',') if config[field_order_key] else [],
+                'selected_fields': selected_fields,
+                'field_order': field_order,
                 'default_product_count': int(config.get(default_count_key, 500))
             }
         else:
             # Настройки по умолчанию
-            default_fields = ['name', 'company_name', 'product_url', 'image_url']
+            default_fields = ['name', 'company_name', 'product_url']
             self.save_user_settings(user_id, default_fields, default_fields, 500)
             return {
                 'selected_fields': default_fields,

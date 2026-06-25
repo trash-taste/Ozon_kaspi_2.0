@@ -251,16 +251,6 @@ class OzonLinkParser:
                     ].filter(Boolean).join('\\n');
                     return {
                         href: link.href || link.getAttribute('href') || '',
-                        image: img
-                            ? (
-                                img.currentSrc
-                                || img.src
-                                || img.getAttribute('data-src')
-                                || img.getAttribute('srcset')
-                                || ''
-                            )
-                            : ''
-                            ,
                         text: text
                     };
                 });
@@ -270,13 +260,12 @@ class OzonLinkParser:
                 self._add_product_link(
                     items,
                     item.get("href", ""),
-                    item.get("image", ""),
                     item.get("text", ""),
                 )
 
             if len(items) < self.max_products:
                 for href in self._extract_product_links_from_html():
-                    self._add_product_link(items, href, "", "")
+                    self._add_product_link(items, href, "")
 
             logger.debug(f"Извлечено ссылок на текущем экране: {len(items)}")
             return items
@@ -289,62 +278,6 @@ class OzonLinkParser:
             return self.driver.find_element(By.ID, "contentScrollPaginator")
         except Exception:
             return None
-
-    def _extract_link_from_tile(self, element) -> Tuple[str, str]:
-        try:
-            link_element = element.find_element(
-                By.CSS_SELECTOR,
-                'a[href*="/product/"], a[data-prerender="true"]',
-            )
-            href = link_element.get_attribute("href")
-            img_url = (
-                self._extract_image_from_element(element)
-                or self._extract_image_near_link(link_element)
-            )
-            return href, img_url
-        except Exception:
-            return "", ""
-
-    def _extract_image_near_link(self, link_element) -> str:
-        try:
-            img_url = self._extract_image_from_element(link_element)
-            if img_url:
-                return img_url
-
-            return (
-                self.driver.execute_script(
-                    """
-                    const link = arguments[0];
-                    const card = link.closest(
-                        '[class*="tile"], [data-widget], div'
-                    ) || link.parentElement;
-                    const img = card ? card.querySelector('img') : null;
-                    if (!img) return '';
-                    return img.currentSrc
-                        || img.src
-                        || img.getAttribute('data-src')
-                        || img.getAttribute('srcset')
-                        || '';
-                    """,
-                    link_element,
-                )
-                or ""
-            )
-        except Exception:
-            return ""
-
-    def _extract_image_from_element(self, element) -> str:
-        try:
-            img_element = element.find_element(By.CSS_SELECTOR, "img")
-            return (
-                img_element.get_attribute("currentSrc")
-                or img_element.get_attribute("src")
-                or img_element.get_attribute("data-src")
-                or img_element.get_attribute("srcset")
-                or ""
-            )
-        except Exception:
-            return ""
 
     def _extract_product_links_from_html(self):
         page_source = html.unescape(self.driver.page_source)
@@ -360,14 +293,12 @@ class OzonLinkParser:
         self,
         items: Dict[str, dict[str, Any]],
         href: str,
-        img_url: str,
         card_text: str = "",
     ):
         normalized = self._normalize_product_url(href)
         if not normalized or normalized in items:
             return
         items[normalized] = {
-            "image_url": self._normalize_image_url(img_url),
             "title": self._extract_title_from_card_text(card_text),
             "price": self._extract_price_from_card_text(card_text),
         }
@@ -466,17 +397,6 @@ class OzonLinkParser:
                 "",
             )
         )
-
-    def _normalize_image_url(self, img_url: str) -> str:
-        if not img_url:
-            return ""
-
-        img_url = html.unescape(img_url).strip()
-        if "," in img_url and " " in img_url:
-            img_url = img_url.split(",", 1)[0].split(" ", 1)[0]
-        if img_url.startswith("//"):
-            img_url = "https:" + img_url
-        return img_url
 
     def _save_debug_snapshot(self):
         try:
