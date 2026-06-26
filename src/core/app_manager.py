@@ -1,10 +1,13 @@
 import logging
 import threading
 import asyncio
+import os
 import time
 from typing import Dict, Any, List, Optional
 from ..config.settings import Settings
 from ..parsers.link_parser import OzonLinkParser
+from ..parsers.ozon_playwright_parser import OzonPlaywrightParser
+from ..parsers.ozon_playwright_product_parser import OzonPlaywrightProductParser
 from ..parsers.product_parser import OzonProductParser
 from ..parsers.seller_parser import OzonSellerParser
 from ..utils.excel_exporter import ExcelExporter
@@ -134,7 +137,7 @@ class AppManager:
             if self.stop_event.is_set():
                 return
             
-            product_parser = OzonProductParser(self.settings.MAX_WORKERS, user_id, headless=self.settings.HEADLESS)
+            product_parser = self._create_product_parser(user_id)
             product_results = product_parser.parse_products(product_links)
             
             # Принудительно закрываем все воркеры продуктов перед началом парсинга продавцов
@@ -256,9 +259,26 @@ class AppManager:
                 resource_manager.finish_parsing_session(user_id)
     
     def _create_link_parser(self, category_url: str, user_id: str = None):
-        return OzonLinkParser(
+        parser_name = os.getenv("OZON_LINK_PARSER", "playwright").strip().casefold()
+        parser_cls = OzonPlaywrightParser if parser_name == "playwright" else OzonLinkParser
+        logger.info("Используется Ozon link parser: %s", parser_cls.__name__)
+        return parser_cls(
             category_url,
             self.settings.MAX_PRODUCTS,
+            user_id,
+            headless=self.settings.HEADLESS,
+        )
+
+    def _create_product_parser(self, user_id: str = None):
+        parser_name = os.getenv("OZON_PRODUCT_PARSER", "playwright").strip().casefold()
+        parser_cls = (
+            OzonPlaywrightProductParser
+            if parser_name == "playwright"
+            else OzonProductParser
+        )
+        logger.info("Используется Ozon product parser: %s", parser_cls.__name__)
+        return parser_cls(
+            self.settings.MAX_WORKERS,
             user_id,
             headless=self.settings.HEADLESS,
         )

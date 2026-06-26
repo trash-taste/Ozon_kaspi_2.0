@@ -12,8 +12,12 @@ services:
       CHROME_BIN: /usr/bin/chromium
       CHROMEDRIVER_PATH: /usr/bin/chromedriver
       PYTHONUNBUFFERED: "1"
+      OZON_LINK_PARSER: "playwright"
+      OZON_PRODUCT_PARSER: "playwright"
       OZON_PAGE_LOAD_TIMEOUT: "30"
       OZON_ANTIBOT_TIMEOUT: "45"
+      OZON_PLAYWRIGHT_TIMEOUT: "15000"
+      OZON_PLAYWRIGHT_NAV_TIMEOUT: "25000"
       OZON_PRODUCT_PAGE_MODE: "always"
       OZON_PRODUCT_WORKERS: "2"
       OZON_SELLER_WORKERS: "2"

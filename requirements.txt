@@ -1,5 +1,6 @@
 selenium==4.15.2
 selenium-stealth==1.0.6
+playwright==1.40.0
 requests==2.31.0
 aiohttp==3.12.15
 beautifulsoup4==4.12.2

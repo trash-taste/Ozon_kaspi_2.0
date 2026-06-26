@@ -4,6 +4,9 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 from src.core.app_manager import AppManager
 from src.parsers.link_parser import OzonLinkParser
+from src.parsers.ozon_playwright_parser import OzonPlaywrightParser
+from src.parsers.ozon_playwright_product_parser import OzonPlaywrightProductParser
+from src.parsers.product_parser import OzonProductParser
 from src.telegram.bot_manager import ScanStates, TelegramBotManager
 
 
@@ -106,10 +109,11 @@ class TelegramFSMTests(unittest.IsolatedAsyncioTestCase):
 
 
 class TelegramKaspiIntegrationTests(unittest.TestCase):
-    def test_app_manager_uses_selenium_stealth_parser_by_default(self):
+    def test_app_manager_uses_playwright_parsers_by_default(self):
         app_manager = AppManager.__new__(AppManager)
         app_manager.settings = SimpleNamespace(
             MAX_PRODUCTS=10,
+            MAX_WORKERS=2,
             HEADLESS=True,
         )
 
@@ -117,8 +121,34 @@ class TelegramKaspiIntegrationTests(unittest.TestCase):
             "https://ozon.kz/category/test-123/",
             "123",
         )
+        product_parser = app_manager._create_product_parser("123")
 
-        self.assertIsInstance(parser, OzonLinkParser)
+        self.assertIsInstance(parser, OzonPlaywrightParser)
+        self.assertIsInstance(product_parser, OzonPlaywrightProductParser)
+
+    def test_app_manager_can_fallback_to_selenium_parsers_by_env(self):
+        app_manager = AppManager.__new__(AppManager)
+        app_manager.settings = SimpleNamespace(
+            MAX_PRODUCTS=10,
+            MAX_WORKERS=2,
+            HEADLESS=True,
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "OZON_LINK_PARSER": "selenium",
+                "OZON_PRODUCT_PARSER": "selenium",
+            },
+        ):
+            link_parser = app_manager._create_link_parser(
+                "https://ozon.kz/category/test-123/",
+                "123",
+            )
+            product_parser = app_manager._create_product_parser("123")
+
+        self.assertIsInstance(link_parser, OzonLinkParser)
+        self.assertIsInstance(product_parser, OzonProductParser)
 
     def test_kaspi_report_is_created_and_sent(self):
         app_manager = AppManager.__new__(AppManager)
