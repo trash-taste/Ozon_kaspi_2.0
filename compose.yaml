@@ -50,6 +50,8 @@ services:
       INTERNET_PRODUCT_CONCURRENCY: "2"
       INTERNET_PAGE_CONCURRENCY: "2"
       INTERNET_USE_KASPI_FALLBACK: "0"
+      OZON_PROXY_URL: ${OZON_PROXY_URL:-}
+      OZON_PROXY_BYPASS: ${OZON_PROXY_BYPASS:-}
     volumes:
       - ./config.txt:/app/config.txt
       - ./output:/app/output

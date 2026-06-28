@@ -147,6 +147,30 @@ sudo docker compose run --rm parser-worker \
 > Для VPS рекомендуется минимум 2 vCPU и 4 ГБ RAM. IP-адреса дата-центров
 > могут чаще попадать под антибот-защиту Ozon.
 
+### Мобильный прокси для Ozon
+
+Для VPS лучше брать мобильный прокси Казахстана с доступом по whitelist IP
+без логина и пароля. Тогда Chromium в контейнере подключается напрямую через
+`--proxy-server`.
+
+Создайте рядом с `compose.yaml` файл `.env`:
+
+```bash
+OZON_PROXY_URL=http://host:port
+OZON_PROXY_BYPASS=localhost,127.0.0.1
+```
+
+Поддерживаются форматы `host:port`, `http://host:port`,
+`https://host:port`, `socks4://host:port`, `socks5://host:port`.
+Прокси с логином и паролем через `OZON_PROXY_URL` не включайте; для такого
+варианта нужен отдельный механизм авторизации браузера.
+
+После изменения `.env` перезапустите worker:
+
+```bash
+sudo docker compose up -d --build parser-worker
+```
+
 ## Доступные поля
 
 | Поле | Описание |

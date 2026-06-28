@@ -44,6 +44,7 @@ class ParserJobQueueTests(unittest.TestCase):
             queue = ParserJobQueue(temp_dir)
 
             queue.request_cancel("123")
+            time.sleep(0.01)
             cutoff = time.time()
 
             self.assertTrue(queue.is_cancel_requested("123"))

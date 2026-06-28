@@ -3,6 +3,7 @@ import logging
 import time
 import json
 import os
+from urllib.parse import urlparse, urlunparse
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.chrome.service import Service
@@ -13,6 +14,32 @@ from selenium_stealth import stealth
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+
+def normalize_proxy_server(proxy_url: str) -> str:
+    raw_proxy = (proxy_url or "").strip()
+    if not raw_proxy:
+        return ""
+    if "://" not in raw_proxy:
+        raw_proxy = f"http://{raw_proxy}"
+
+    parsed = urlparse(raw_proxy)
+    if parsed.scheme not in {"http", "https", "socks4", "socks5"}:
+        raise ValueError(
+            "OZON_PROXY_URL должен быть http(s)/socks4/socks5 proxy"
+        )
+    if parsed.username or parsed.password:
+        raise ValueError(
+            "OZON_PROXY_URL с логином/паролем не поддерживается через "
+            "Chrome --proxy-server. Используйте whitelist IP у провайдера."
+        )
+    if not parsed.hostname or not parsed.port:
+        raise ValueError(
+            "OZON_PROXY_URL должен быть в формате host:port или scheme://host:port"
+        )
+
+    return urlunparse((parsed.scheme, parsed.netloc, "", "", "", ""))
+
 
 class SeleniumManager:
     
@@ -40,6 +67,7 @@ class SeleniumManager:
         )
         chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
         chrome_options.add_experimental_option('useAutomationExtension', False)
+        self._apply_proxy_options(chrome_options)
         
         chrome_options.add_argument("--disable-extensions")
         chrome_options.add_argument("--disable-plugins")
@@ -104,6 +132,7 @@ class SeleniumManager:
             "goog:loggingPrefs",
             {"performance": "ALL"},
         )
+        self._apply_proxy_options(chrome_options)
         
         chrome_options.add_argument("--disable-extensions")
         chrome_options.add_argument("--disable-plugins")
@@ -240,6 +269,20 @@ class SeleniumManager:
                 options=chrome_options,
             )
         return webdriver.Chrome(options=chrome_options)
+
+    def _apply_proxy_options(self, chrome_options: Options) -> None:
+        proxy_url = os.getenv("OZON_PROXY_URL", "").strip()
+        if not proxy_url:
+            return
+
+        proxy_server = normalize_proxy_server(proxy_url)
+        chrome_options.add_argument(f"--proxy-server={proxy_server}")
+
+        bypass_list = os.getenv("OZON_PROXY_BYPASS", "").strip()
+        if bypass_list:
+            chrome_options.add_argument(f"--proxy-bypass-list={bypass_list}")
+
+        logger.info("Chrome proxy включен: %s", proxy_server)
     
     def _wait_for_antibot_bypass(self, max_wait_time: int = None):
         if max_wait_time is None:
