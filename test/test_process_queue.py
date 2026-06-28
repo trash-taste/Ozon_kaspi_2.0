@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 
@@ -37,6 +38,21 @@ class ParserJobQueueTests(unittest.TestCase):
 
             self.assertTrue(queue.is_cancel_requested("123"))
             self.assertFalse(queue.is_cancel_requested("456"))
+
+    def test_stale_cancel_before_job_is_ignored_by_timestamp(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            queue = ParserJobQueue(temp_dir)
+
+            queue.request_cancel("123")
+            cutoff = time.time()
+
+            self.assertTrue(queue.is_cancel_requested("123"))
+            self.assertFalse(queue.is_cancel_requested("123", since=cutoff))
+
+            time.sleep(0.01)
+            queue.request_cancel("123")
+
+            self.assertTrue(queue.is_cancel_requested("123", since=cutoff))
 
 
 class QueuedAppManagerTests(unittest.TestCase):

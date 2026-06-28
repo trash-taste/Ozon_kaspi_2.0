@@ -105,11 +105,26 @@ class ParserJobQueue:
             encoding="utf-8",
         )
 
-    def is_cancel_requested(self, user_id: str | None = None) -> bool:
-        return (self.cancel_dir / "all.cancel").exists() or (
-            bool(user_id)
-            and (self.cancel_dir / f"{user_id}.cancel").exists()
-        )
+    def is_cancel_requested(
+        self,
+        user_id: str | None = None,
+        since: float | None = None,
+    ) -> bool:
+        paths = [self.cancel_dir / "all.cancel"]
+        if user_id:
+            paths.append(self.cancel_dir / f"{user_id}.cancel")
+        return any(self._cancel_matches(path, since) for path in paths)
+
+    @staticmethod
+    def _cancel_matches(path: Path, since: float | None = None) -> bool:
+        if not path.exists():
+            return False
+        if since is None:
+            return True
+        try:
+            return float(path.read_text(encoding="utf-8").strip()) >= since
+        except (OSError, ValueError):
+            return True
 
     def clear_cancel(self, user_id: str | None = None):
         targets = [self.cancel_dir / "all.cancel"]

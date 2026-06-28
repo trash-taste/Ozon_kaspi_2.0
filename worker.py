@@ -78,10 +78,11 @@ def _watch_cancel(
     queue: ParserJobQueue,
     app_manager: AppManager,
     user_id: str | None,
+    since: float,
     done_event: threading.Event,
 ):
     while not done_event.wait(1):
-        if queue.is_cancel_requested(user_id):
+        if queue.is_cancel_requested(user_id, since=since):
             logger.info("Cancel file detected for user_id=%s", user_id)
             app_manager.stop_parsing(user_id)
             return
@@ -96,9 +97,10 @@ def process_job(queue: ParserJobQueue, job: dict[str, Any], bot_token: str | Non
     app_manager = AppManager(settings)
     app_manager.telegram_bot = WorkerTelegramNotifier(bot_token)
     done_event = threading.Event()
+    cancel_since = float(job.get("created_at") or job.get("started_at") or 0)
     cancel_thread = threading.Thread(
         target=_watch_cancel,
-        args=(queue, app_manager, user_id, done_event),
+        args=(queue, app_manager, user_id, cancel_since, done_event),
         daemon=True,
     )
 
@@ -123,7 +125,7 @@ def process_job(queue: ParserJobQueue, job: dict[str, Any], bot_token: str | Non
             pass
 
         summary = _result_summary(app_manager, user_id)
-        if queue.is_cancel_requested(user_id):
+        if queue.is_cancel_requested(user_id, since=cancel_since):
             queue.fail(job_id, "cancelled", summary)
             logger.info("Parser job cancelled: job_id=%s", job_id)
         else:
