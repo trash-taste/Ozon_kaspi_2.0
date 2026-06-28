@@ -10,6 +10,7 @@ from .product_parser import (
     ProductInfo,
     ProductWorker,
     extract_product_page_fallback,
+    _is_plausible_page_price,
 )
 
 logger = logging.getLogger(__name__)
@@ -178,15 +179,26 @@ class OzonPlaywrightProductParser:
 
             prices = page_data["prices"]
             if prices:
-                product.card_price = int(prices[0])
-                product.price = int(prices[0])
-                higher = [price for price in prices[1:] if price > product.price]
-                product.original_price = max(higher) if higher else 0
-                logger.info(
-                    "Playwright цена Ozon из карточки %s: %s",
-                    article,
-                    product.price,
-                )
+                page_price = int(prices[0])
+                listing_price = product.price
+                if _is_plausible_page_price(page_price, listing_price):
+                    product.card_price = page_price
+                    product.price = page_price
+                    higher = [price for price in prices[1:] if price > product.price]
+                    product.original_price = max(higher) if higher else 0
+                    logger.info(
+                        "Playwright цена Ozon из карточки %s: %s",
+                        article,
+                        product.price,
+                    )
+                elif product.success:
+                    logger.warning(
+                        "Playwright подозрительная цена карточки %s: %s, "
+                        "оставлена цена из листинга: %s",
+                        article,
+                        page_price,
+                        listing_price,
+                    )
             elif product.success:
                 logger.warning(
                     "Playwright не нашел цену в карточке %s, оставлена "

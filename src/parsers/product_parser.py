@@ -9,7 +9,11 @@ from typing import Any, Dict, List
 from bs4 import BeautifulSoup
 
 from ..utils.selenium_manager import SeleniumManager
-from .ozon_listing_data import decode_ozon_source, extract_price_from_card_text
+from .ozon_listing_data import (
+    decode_ozon_source,
+    extract_price_from_card_text,
+    select_sale_price,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +99,10 @@ def extract_product_page_fallback(page_source: str) -> Dict[str, object]:
     if targeted_prices:
         prices = _ordered_unique([*targeted_prices, *prices])
 
+    visible_prices = _extract_visible_product_prices(soup, title)
+    if visible_prices:
+        prices = _ordered_unique([*visible_prices, *prices])
+
     if not prices:
         page_text_price = extract_price_from_card_text(soup.get_text("\n"))
         if page_text_price:
@@ -171,15 +179,26 @@ class ProductWorker:
                 product.image_url = str(page_data["image_url"])
             prices = page_data["prices"]
             if prices:
-                product.card_price = int(prices[0])
-                product.price = int(prices[0])
-                higher = [price for price in prices[1:] if price > product.price]
-                product.original_price = max(higher) if higher else 0
-                logger.info(
-                    "Товар %s: цена Ozon взята из карточки товара: %s",
-                    article,
-                    product.price,
-                )
+                page_price = int(prices[0])
+                listing_price = product.price
+                if _is_plausible_page_price(page_price, listing_price):
+                    product.card_price = page_price
+                    product.price = page_price
+                    higher = [price for price in prices[1:] if price > product.price]
+                    product.original_price = max(higher) if higher else 0
+                    logger.info(
+                        "Товар %s: цена Ozon взята из карточки товара: %s",
+                        article,
+                        product.price,
+                    )
+                elif product.success:
+                    logger.warning(
+                        "Товар %s: подозрительная цена карточки %s, "
+                        "оставлена цена из листинга: %s",
+                        article,
+                        page_price,
+                        listing_price,
+                    )
             elif product.success:
                 logger.warning(
                     "Товар %s: цена в карточке не найдена, оставлена цена "
@@ -379,6 +398,16 @@ def _extract_price_number(value: Any) -> int:
     return price if 100 <= price <= 10_000_000 else 0
 
 
+def _is_plausible_page_price(page_price: int, listing_price: int) -> bool:
+    if not page_price:
+        return False
+    if not listing_price:
+        return True
+    lower = min(page_price, listing_price)
+    higher = max(page_price, listing_price)
+    return higher / lower <= 2.5
+
+
 def _extract_product_page_prices(
     soup: BeautifulSoup,
     decoded_source: str,
@@ -400,26 +429,94 @@ def _extract_product_page_prices(
         "basePrice",
         "priceWithoutDiscount",
     )
-    sale_prices: list[int] = []
+    widget_sale_prices: list[int] = []
+    source_sale_prices: list[int] = []
     original_prices: list[int] = []
 
     for widget in soup.select('[data-widget*="webPrice"], [data-widget*="price"]'):
         price = extract_price_from_card_text(widget.get_text("\n"))
         if price:
-            sale_prices.append(price)
+            widget_sale_prices.append(price)
 
-    sale_prices.extend(_extract_prices_for_keys(decoded_source, sale_keys))
+    source_sale_prices.extend(_extract_prices_for_keys(decoded_source, sale_keys))
     original_prices.extend(_extract_prices_for_keys(decoded_source, original_keys))
 
-    sale_prices = _ordered_unique(sale_prices)
+    visible_sale_price = select_sale_price(widget_sale_prices)
+    if visible_sale_price:
+        original_prices = [
+            price
+            for price in _ordered_unique(original_prices)
+            if price > visible_sale_price
+        ]
+        return [visible_sale_price, *original_prices]
+
+    sale_prices = _ordered_unique(source_sale_prices)
     original_prices = [
         price
         for price in _ordered_unique(original_prices)
-        if not sale_prices or price > min(sale_prices)
+        if not sale_prices or price > select_sale_price(sale_prices)
     ]
     if sale_prices:
-        return [min(sale_prices), *original_prices]
+        return [select_sale_price(sale_prices), *original_prices]
     return original_prices
+
+
+def _extract_visible_product_prices(
+    soup: BeautifulSoup,
+    title: str,
+) -> list[int]:
+    if not title:
+        return []
+
+    lines = [
+        _clean_text(line)
+        for line in soup.get_text("\n").splitlines()
+        if _clean_text(line)
+    ]
+    title_key = _clean_text(title).casefold()[:80]
+    start_index = -1
+    for index, line in enumerate(lines):
+        if title_key and title_key in line.casefold():
+            start_index = index
+            break
+    if start_index < 0:
+        return []
+
+    window: list[str] = []
+    for line in lines[start_index : start_index + 80]:
+        lowered = line.casefold()
+        if window and any(
+            marker in lowered
+            for marker in (
+                "рекомендуем также",
+                "похожие",
+                "покупают вместе",
+                "подобрали для вас",
+            )
+        ):
+            break
+        window.append(line)
+        if "в корзин" in lowered:
+            break
+
+    values: list[int] = []
+    for match in re.finditer(
+        r"(\d[\d\s\u00a0\u202f.,]{1,})\s*(?:₸|тг|тенге)"
+        r"|(?:₸|тг|тенге)\s*(\d[\d\s\u00a0\u202f.,]{1,})",
+        "\n".join(window),
+        flags=re.IGNORECASE,
+    ):
+        price = _extract_price_number(match.group(1) or match.group(2))
+        if price and price not in values:
+            values.append(price)
+
+    sale_price = select_sale_price(values)
+    if not sale_price:
+        return []
+    original_prices = [
+        price for price in _ordered_unique(values) if price > sale_price
+    ]
+    return [sale_price, *original_prices]
 
 
 def _extract_prices_for_keys(source: str, keys: tuple[str, ...]) -> list[int]:

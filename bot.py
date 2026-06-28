@@ -6,11 +6,13 @@
 """
 
 import logging
+import os
 import signal
 import sys
 import threading
 from src.config.settings import Settings
 from src.core.app_manager import AppManager
+from src.core.queued_app_manager import QueuedAppManager
 from src.telegram.bot_manager import TelegramBotManager
 from src.utils.logger import setup_logging
 from src.utils.config_loader import load_telegram_config_multi
@@ -45,7 +47,13 @@ def main():
             return 1
         
         settings = Settings()
-        app_manager = AppManager(settings)
+        manager_mode = os.getenv("APP_MANAGER_MODE", "direct").strip().lower()
+        if manager_mode == "queue":
+            app_manager = QueuedAppManager(settings)
+            logger.info("App manager mode: queue")
+        else:
+            app_manager = AppManager(settings)
+            logger.info("App manager mode: direct")
         
         bot_manager = TelegramBotManager(bot_token, chat_ids, app_manager)
         app_manager.telegram_bot = bot_manager

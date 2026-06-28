@@ -48,6 +48,74 @@ class InternetSearchTests(unittest.TestCase):
         self.assertEqual(len(results), 1)
         self.assertEqual(results[0]["source"], "shop.example.kz")
 
+    def test_parses_google_result_links(self):
+        html = """
+        <html><body>
+          <a href="/url?q=https://kz.multivarka.pro/catalog/redmond-rka-pm7">
+            REDMOND RKA-PM7
+          </a>
+          <a href="/url?q=https://ozon.kz/product/test">Ozon</a>
+          <a href="/url?q=https://example.com/product/test">Foreign</a>
+        </body></html>
+        """
+        results = internet_compare._parse_google_search_results(html)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["source"], "kz.multivarka.pro")
+        self.assertEqual(
+            results[0]["url"],
+            "https://kz.multivarka.pro/catalog/redmond-rka-pm7",
+        )
+
+    def test_parses_google_ad_links(self):
+        html = """
+        <html><body>
+          <a href="/aclk?sa=l&adurl=https://shop.example.kz/p/redmond">
+            Реклама REDMOND RKA-PM7
+          </a>
+        </body></html>
+        """
+        results = internet_compare._parse_google_search_results(html)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["source"], "shop.example.kz")
+
+    def test_adds_multivarka_direct_source_for_spice_grinder(self):
+        results = internet_compare._direct_source_results(
+            '"REDMOND RKA-PM7" цена Казахстан купить'
+        )
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0]["source"], "kz.multivarka.pro")
+
+    def test_parses_multivarka_catalog_cards(self):
+        html = """
+        <div class="product-item">
+          <a itemprop="name"
+             href="/catalog/drugaya_kukhonnaya_tekhnika/melnitsa-dlya-spetsiy-redmond-rka-pm7/">
+            Мельница для специй REDMOND <span>RKA-PM7</span>
+          </a>
+          <div itemprop="price" class="product-item-price-new">
+            <span>4 990</span><span> т</span>
+            <div>-84%</div>
+          </div>
+          <a class="btn-report-stock">Сообщить о поступлении</a>
+        </div>
+        """
+        products = internet_compare._parse_store_page(
+            html,
+            "https://kz.multivarka.pro/catalog/melnitsy-dlya-spetsiy/",
+            "kz.multivarka.pro",
+        )
+        self.assertEqual(len(products), 1)
+        self.assertEqual(
+            products[0]["title"],
+            "Мельница для специй REDMOND RKA-PM7",
+        )
+        self.assertEqual(products[0]["price"], 4990)
+        self.assertEqual(products[0]["availability"], "Нет в наличии")
+        self.assertEqual(
+            products[0]["url"],
+            "https://kz.multivarka.pro/catalog/drugaya_kukhonnaya_tekhnika/melnitsa-dlya-spetsiy-redmond-rka-pm7/",
+        )
+
     def test_parses_multiple_json_ld_offers(self):
         html = """
         <html><head>
@@ -438,7 +506,7 @@ class InternetReportAndCliTests(unittest.TestCase):
 
     def test_cli_calls_internet_services(self):
         products = [{"title": "Товар", "price": 10000}]
-        items = [{"profit": 5000}]
+        items = [{"matched": True, "profit": 5000}]
         with patch(
             "services.internet_compare.compare_with_internet",
             new=AsyncMock(return_value=items),

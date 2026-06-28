@@ -347,7 +347,7 @@ class TelegramBotManager:
             await query.message.edit_text("❌ Парсинг отменен")
             await query.message.reply("Выберите действие:", reply_markup=keyboard)
         elif data == "stop_parsing":
-            self.app_manager.stop_parsing()
+            self.app_manager.stop_parsing(str(query.from_user.id))
             keyboard = ReplyKeyboardMarkup(keyboard=[
                 [KeyboardButton(text="🏠 Главное меню")]
             ], resize_keyboard=True)
@@ -534,7 +534,7 @@ class TelegramBotManager:
         elif text == "🔄 Обновить":
             await self._show_status(message)
         elif text == "❌ Завершить":
-            self.app_manager.stop_parsing()
+            self.app_manager.stop_parsing(str(message.from_user.id))
             await message.reply("⏹️ Парсинг остановлен")
             await self._cmd_start(message, state)
         elif self._is_ozon_category_url(text):

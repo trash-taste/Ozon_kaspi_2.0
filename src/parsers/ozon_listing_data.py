@@ -170,7 +170,17 @@ def extract_price_from_card_text(card_text: str) -> int:
             if price and price not in values:
                 values.append(price)
 
-    return min(values) if values else 0
+    return select_sale_price(values)
+
+
+def select_sale_price(values: list[int]) -> int:
+    """Pick sale price while ignoring tiny installment-like values."""
+    prices = sorted(dict.fromkeys(price for price in values if price))
+    if not prices:
+        return 0
+    if len(prices) >= 2 and prices[1] / prices[0] >= 3:
+        return prices[1]
+    return prices[0]
 
 
 def extract_listing_items_from_html(

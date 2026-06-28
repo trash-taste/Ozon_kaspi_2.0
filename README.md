@@ -59,9 +59,21 @@ USER_your_user_id_FIELD_ORDER=name,company_name,inn,price
 USER_your_user_id_DEFAULT_COUNT=500
 ```
 
+## Разделение процессов
+
+В Docker Compose бот и парсер запускаются отдельно:
+
+- `bot` — Telegram, FSM, настройки пользователей и постановка задач в очередь.
+- `parser-worker` — отдельный процесс с Chromium/Playwright, который забирает
+  задачи из `runtime/`, запускает парсер, делает Excel и сравнение цен.
+
+Парсеры в `src/parsers/` при этом не меняются. Связь между процессами идет
+через файловую очередь `runtime/`, а результаты остаются в `output/` и
+`reports/`.
+
 ## Docker Compose на Ubuntu 24.04
 
-Контейнер предназначен для Telegram-бота и ручных CLI-запусков. GUI
+Compose запускает два процесса: Telegram-бот и отдельный worker парсинга. GUI
 `main.py` внутри контейнера не используется.
 
 ### 1. Установите Docker
@@ -87,7 +99,7 @@ cp config.example.txt config.txt
 nano config.txt
 chmod 600 config.txt
 
-mkdir -p output reports logs
+mkdir -p output reports logs runtime
 ```
 
 В `config.txt` укажите реальный токен BotFather и Telegram User ID. Этот файл
@@ -98,10 +110,11 @@ mkdir -p output reports logs
 
 ```bash
 sudo docker compose up -d --build
-sudo docker compose logs -f bot
+sudo docker compose logs -f bot parser-worker
 ```
 
 Порты открывать не требуется: Telegram-бот работает через исходящие запросы.
+Парсер работает в отдельном контейнере и забирает задания из общей очереди.
 
 ### Обновление
 
@@ -115,6 +128,7 @@ sudo docker compose up -d --build --remove-orphans
 ```bash
 sudo docker compose ps
 sudo docker compose restart bot
+sudo docker compose restart parser-worker
 sudo docker compose stop
 ```
 
@@ -123,7 +137,7 @@ sudo docker compose stop
 Тот же образ можно использовать без запуска второго постоянного сервиса:
 
 ```bash
-sudo docker compose run --rm bot \
+sudo docker compose run --rm parser-worker \
   python -u app.py "https://ozon.kz/category/..." --count 10
 ```
 

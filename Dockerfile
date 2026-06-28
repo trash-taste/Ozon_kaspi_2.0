@@ -23,7 +23,7 @@ COPY requirements.txt .
 RUN python -m pip install --upgrade pip \
     && python -m pip install -r requirements.txt
 
-COPY app.py bot.py main.py ./
+COPY app.py bot.py main.py worker.py ./
 COPY services ./services
 COPY src ./src
 

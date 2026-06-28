@@ -122,6 +122,7 @@ Thumbs.db
 output/
 logs/
 reports/
+runtime/
 *.json
 *.exe
 chromedriver*

@@ -6,7 +6,7 @@ import re
 import unicodedata
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from typing import Any
-from urllib.parse import quote_plus, urljoin, urlparse
+from urllib.parse import parse_qs, quote_plus, urljoin, urlparse
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -15,11 +15,17 @@ from rapidfuzz import fuzz
 logger = logging.getLogger(__name__)
 
 YANDEX_SEARCH_URL = "https://yandex.kz/search/?text={query}"
+GOOGLE_SEARCH_URL = "https://www.google.com/search?q={query}&hl=ru&gl=kz&num=20"
 MATCH_THRESHOLD = 72.0
 MODEL_MATCH_BONUS = 15.0
 SEARCH_RETRIES = 3
 PAGE_RETRIES = 2
-MAX_SEARCH_RESULTS = 12
+MAX_SEARCH_RESULTS = int(os.getenv("INTERNET_MAX_SEARCH_RESULTS", "20"))
+SEARCH_ENGINES = tuple(
+    item.strip().casefold()
+    for item in os.getenv("INTERNET_SEARCH_ENGINES", "google,yandex").split(",")
+    if item.strip()
+)
 MAX_CONCURRENT_PAGES = int(os.getenv("INTERNET_PAGE_CONCURRENCY", "2"))
 MAX_CONCURRENT_PRODUCTS = int(
     os.getenv("INTERNET_PRODUCT_CONCURRENCY", "2")
@@ -39,9 +45,21 @@ USER_AGENT = (
 EXCLUDED_DOMAINS = {
     "ozon.kz",
     "ozon.ru",
+    "google.com",
+    "google.kz",
     "yandex.kz",
     "yandex.ru",
 }
+KAZAKHSTAN_MARKET_DOMAINS = {
+    "kz.multivarka.pro",
+}
+DIRECT_SOURCE_RULES = (
+    (
+        ("rka-pm", "мельниц"),
+        "https://kz.multivarka.pro/catalog/melnitsy-dlya-spetsiy/",
+        "kz.multivarka.pro",
+    ),
+)
 BRAND_ALIASES = {
     "apple": "apple",
     "beko": "beko",
@@ -175,6 +193,81 @@ def _is_excluded_domain(host: str) -> bool:
     )
 
 
+def _is_kazakhstan_market_host(host: str) -> bool:
+    normalized = host.casefold().removeprefix("www.")
+    return (
+        normalized.endswith(".kz")
+        or normalized.startswith("kz.")
+        or normalized in KAZAKHSTAN_MARKET_DOMAINS
+    )
+
+
+def _normalize_search_url(raw_url: str) -> str:
+    raw_url = str(raw_url or "").strip()
+    if not raw_url:
+        return ""
+
+    parsed = urlparse(raw_url)
+    if parsed.scheme in {"http", "https"} and parsed.netloc:
+        host = parsed.netloc.casefold().removeprefix("www.")
+        if host.endswith("google.com") or host.endswith("google.kz"):
+            query = parse_qs(parsed.query)
+            for key in ("q", "url", "adurl"):
+                value = query.get(key, [""])[0]
+                if value:
+                    return value
+        return raw_url
+
+    if raw_url.startswith(("/url?", "/aclk?")):
+        query = parse_qs(urlparse(raw_url).query)
+        for key in ("q", "url", "adurl"):
+            value = query.get(key, [""])[0]
+            if value:
+                return value
+    return ""
+
+
+def _append_search_result(
+    results: list[dict[str, str]],
+    seen: set[str],
+    url: str,
+    snippet: str,
+) -> None:
+    parsed = urlparse(url)
+    normalized_host = parsed.netloc.casefold().removeprefix("www.")
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or not _is_kazakhstan_market_host(parsed.netloc)
+        or _is_excluded_domain(parsed.netloc)
+        or url in seen
+    ):
+        return
+    seen.add(url)
+    results.append(
+        {
+            "url": url,
+            "source": normalized_host,
+            "snippet": snippet,
+        }
+    )
+
+
+def _direct_source_results(query: str) -> list[dict[str, str]]:
+    normalized = _normalize_text(query)
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for needles, url, source in DIRECT_SOURCE_RULES:
+        if any(needle in normalized for needle in needles):
+            _append_search_result(
+                results,
+                seen,
+                url,
+                f"Прямой источник {source}",
+            )
+    return results
+
+
 def _parse_search_results(html: str) -> list[dict[str, str]]:
     soup = BeautifulSoup(html, "html.parser")
     results: list[dict[str, str]] = []
@@ -183,56 +276,102 @@ def _parse_search_results(html: str) -> list[dict[str, str]]:
         link = item.select_one("a.OrganicHost-Link[href]")
         if link is None:
             continue
-        url = str(link.get("href") or "").strip()
-        parsed = urlparse(url)
-        normalized_host = parsed.netloc.casefold().removeprefix("www.")
-        if (
-            parsed.scheme not in {"http", "https"}
-            or not parsed.netloc
-            or not normalized_host.endswith(".kz")
-            or _is_excluded_domain(parsed.netloc)
-            or url in seen
-        ):
-            continue
-        seen.add(url)
-        results.append(
-            {
-                "url": url,
-                "source": parsed.netloc.removeprefix("www."),
-                "snippet": item.get_text(" ", strip=True),
-            }
+        _append_search_result(
+            results,
+            seen,
+            _normalize_search_url(str(link.get("href") or "").strip()),
+            item.get_text(" ", strip=True),
         )
         if len(results) >= MAX_SEARCH_RESULTS:
             break
     return results
 
 
+def _parse_google_search_results(html: str) -> list[dict[str, str]]:
+    soup = BeautifulSoup(html, "html.parser")
+    results: list[dict[str, str]] = []
+    seen: set[str] = set()
+    for link in soup.select("a[href]"):
+        url = _normalize_search_url(str(link.get("href") or ""))
+        if not url:
+            continue
+        container = link.find_parent(["div", "li", "g-card"]) or link
+        _append_search_result(
+            results,
+            seen,
+            url,
+            container.get_text(" ", strip=True),
+        )
+        if len(results) >= MAX_SEARCH_RESULTS:
+            break
+    return results
+
+
+def _parse_search_engine_results(engine: str, html: str) -> list[dict[str, str]]:
+    if engine == "google":
+        return _parse_google_search_results(html)
+    return _parse_search_results(html)
+
+
 async def search_internet_sources(
     session: aiohttp.ClientSession,
     query: str,
 ) -> list[dict[str, str]]:
-    """Ищет страницы казахстанских магазинов через Yandex.kz."""
-    url = YANDEX_SEARCH_URL.format(query=quote_plus(query))
+    """Ищет страницы казахстанских магазинов через Google и Yandex."""
+    urls = {
+        "google": GOOGLE_SEARCH_URL.format(query=quote_plus(query)),
+        "yandex": YANDEX_SEARCH_URL.format(query=quote_plus(query)),
+    }
+    combined = _direct_source_results(query)
+    seen = {str(item.get("url") or "") for item in combined}
+    for engine in SEARCH_ENGINES:
+        if engine not in urls:
+            continue
+        found = await _search_single_engine(session, query, engine, urls[engine])
+        for item in found:
+            url = str(item.get("url") or "")
+            if url in seen:
+                continue
+            seen.add(url)
+            combined.append(item)
+            if len(combined) >= MAX_SEARCH_RESULTS:
+                return combined
+    return combined
+
+
+async def _search_single_engine(
+    session: aiohttp.ClientSession,
+    query: str,
+    engine: str,
+    url: str,
+) -> list[dict[str, str]]:
     for attempt in range(1, SEARCH_RETRIES + 1):
         try:
             async with session.get(url) as response:
                 response.raise_for_status()
                 html = await response.text(errors="replace")
             lowered = html.casefold()
-            if "showcaptcha" in str(response.url) or "проверка браузера" in lowered:
-                raise RuntimeError("Yandex запросил проверку браузера")
-            results = _parse_search_results(html)
+            if (
+                "showcaptcha" in str(response.url)
+                or "проверка браузера" in lowered
+                or "unusual traffic" in lowered
+                or "/sorry/" in str(response.url)
+            ):
+                raise RuntimeError(f"{engine} запросил проверку браузера")
+            results = _parse_search_engine_results(engine, html)
             if results:
                 return results
             logger.info(
-                "Интернет-поиск не вернул магазинов: query=%r attempt=%s/%s",
+                "%s интернет-поиск не вернул магазинов: query=%r attempt=%s/%s",
+                engine,
                 query,
                 attempt,
                 SEARCH_RETRIES,
             )
         except (aiohttp.ClientError, asyncio.TimeoutError, RuntimeError) as exc:
             logger.warning(
-                "Ошибка интернет-поиска: query=%r attempt=%s/%s: %s",
+                "Ошибка %s интернет-поиска: query=%r attempt=%s/%s: %s",
+                engine,
                 query,
                 attempt,
                 SEARCH_RETRIES,
@@ -341,13 +480,55 @@ def _walk_json_products(
     return products
 
 
+def _parse_multivarka_catalog(
+    soup: BeautifulSoup,
+    page_url: str,
+) -> list[dict[str, Any]]:
+    products: list[dict[str, Any]] = []
+    for card in soup.select(".product-item"):
+        title_node = card.select_one('[itemprop="name"]')
+        price_node = card.select_one('[itemprop="price"]')
+        if title_node is None or price_node is None:
+            continue
+        title = title_node.get_text(" ", strip=True)
+        price_text_node = price_node.select_one("span")
+        price_text = (
+            price_text_node.get_text(" ", strip=True)
+            if price_text_node is not None
+            else price_node.get_text(" ", strip=True)
+        )
+        price = _to_decimal(price_text)
+        if not title or price is None:
+            continue
+        url = urljoin(page_url, str(title_node.get("href") or page_url))
+        availability = (
+            "Нет в наличии"
+            if "сообщить о поступлении" in card.get_text(" ", strip=True).casefold()
+            else "В наличии"
+        )
+        products.append(
+            {
+                "title": title,
+                "brand": None,
+                "price": price,
+                "url": url,
+                "availability": availability,
+            }
+        )
+    return products
+
+
 def _parse_store_page(
     html: str,
     page_url: str,
     source: str,
 ) -> list[dict[str, Any]]:
     soup = BeautifulSoup(html, "html.parser")
+    normalized_source = source.casefold().removeprefix("www.")
     products: list[dict[str, Any]] = []
+    if normalized_source == "kz.multivarka.pro":
+        products.extend(_parse_multivarka_catalog(soup, page_url))
+
     for script in soup.select('script[type="application/ld+json"]'):
         text = script.string or script.get_text()
         if not text.strip():

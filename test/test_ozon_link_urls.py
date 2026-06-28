@@ -85,6 +85,14 @@ class OzonProductURLTests(unittest.TestCase):
         )
         self.assertEqual(extract_price_from_card_text(card_text), 34990)
 
+    def test_ignores_tiny_installment_like_price(self):
+        card_text = (
+            "REDMOND Мультипекарь RMB-M614/1 700 Вт, черный "
+            "17 890 ₸ 1 450 ₸"
+        )
+
+        self.assertEqual(extract_price_from_card_text(card_text), 17890)
+
     def test_recovers_current_product_url_when_category_wait_times_out(self):
         self.parser.driver = SimpleNamespace(
             current_url="https://ozon.kz/product/test-product-4103859568/",
@@ -252,6 +260,49 @@ class OzonProductWorkerTests(unittest.TestCase):
         self.assertEqual(result["title"], "REDMOND RMC-M52 мультиварка")
         self.assertEqual(result["prices"], [34990])
 
+    def test_visible_product_price_wins_over_hidden_source_price(self):
+        html = """
+        <html><body>
+          <h1>REDMOND Мультипекарь RMB-M614/1 700 Вт, черный</h1>
+          <div data-widget="webPrice">
+            17 392 ₸
+            30 702 ₸
+            Стало дешевле
+            1 450 ₸
+            × 12 месяцев
+          </div>
+          <script>
+            window.__data = {"price": "15 654 ₸", "originalPrice": "30 702 ₸"};
+          </script>
+        </body></html>
+        """
+
+        result = extract_product_page_fallback(html)
+
+        self.assertEqual(result["prices"], [17392, 30702])
+
+    def test_visible_product_price_ignores_recommendation_prices(self):
+        html = """
+        <html><body>
+          <h1>REDMOND RV-UR370 Вертикальный беспроводной пылесос</h1>
+          <div>
+            REDMOND RV-UR370 Вертикальный беспроводной пылесос
+            30 608 ₸
+            45 000 ₸
+            В корзину
+          </div>
+          <section>
+            Рекомендуем также
+            148 460 ₸
+            203 321 ₸
+          </section>
+        </body></html>
+        """
+
+        result = extract_product_page_fallback(html)
+
+        self.assertEqual(result["prices"], [30608, 45000])
+
     def test_product_worker_uses_listing_metadata(self):
         worker = ProductWorker(1)
         product = worker._build_from_listing(
@@ -307,6 +358,35 @@ class OzonProductWorkerTests(unittest.TestCase):
         self.assertTrue(product.success)
         self.assertEqual(product.name, "REDMOND RMC-M52 карточка")
         self.assertEqual(product.price, 22222)
+
+    def test_product_worker_keeps_listing_price_when_page_price_is_suspicious(self):
+        worker = ProductWorker(1, page_mode="always")
+        worker.driver = SimpleNamespace(
+            page_source="""
+            <html><body>
+              <h1>REDMOND RV-UR370 карточка</h1>
+              <div data-widget="webPrice">148 460 ₸</div>
+            </body></html>
+            """
+        )
+
+        with patch.object(
+            worker.selenium_manager,
+            "navigate_to_url",
+            return_value=True,
+        ):
+            product = worker._parse_single_product(
+                "1948518910",
+                "https://ozon.kz/product/test-1948518910/",
+                {
+                    "title": "REDMOND RV-UR370 листинг",
+                    "price": 30608,
+                    "image_url": "https://img.test/item.jpg",
+                },
+            )
+
+        self.assertTrue(product.success)
+        self.assertEqual(product.price, 30608)
 
     def test_product_parser_opens_product_pages_by_default(self):
         parser = OzonProductParser(max_workers=2)

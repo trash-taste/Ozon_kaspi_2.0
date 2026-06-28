@@ -291,7 +291,8 @@ def run_internet_comparison(
         )
     )
     report_path = save_internet_comparison_report(comparison_items)
-    return len(comparison_items), report_path
+    matched_count = len([item for item in comparison_items if item.get("matched")])
+    return matched_count, report_path
 
 
 def main():
