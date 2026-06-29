@@ -673,11 +673,11 @@ def _calculate_economics(
         else Decimal("2000")
     )
     commission = internet_price * commission_rate / Decimal("100")
-    net_revenue = internet_price - commission
+    net_revenue = internet_price - commission - delivery
     total_cost = ozon_price + delivery
     price_difference = internet_price - ozon_price
-    profit = net_revenue - total_cost
-    roi = profit / total_cost * Decimal("100")
+    profit = net_revenue - ozon_price
+    roi = profit / ozon_price * Decimal("100")
     if min_roi is not None and roi < min_roi:
         return None
 

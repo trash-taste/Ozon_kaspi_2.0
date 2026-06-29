@@ -255,9 +255,9 @@ class InternetEconomicsTests(unittest.TestCase):
         self.assertEqual(result["total_cost"], 10950.0)
         self.assertEqual(result["commission_rate"], 16.0)
         self.assertEqual(result["commission"], 2400.0)
-        self.assertEqual(result["net_revenue"], 12600.0)
+        self.assertEqual(result["net_revenue"], 11650.0)
         self.assertEqual(result["profit"], 1650.0)
-        self.assertEqual(result["roi"], 15.07)
+        self.assertEqual(result["roi"], 16.5)
         self.assertEqual(result["sources_count"], 3)
 
     def test_keeps_negative_profit(self):
@@ -275,9 +275,9 @@ class InternetEconomicsTests(unittest.TestCase):
         self.assertEqual(result["profit"], -9400.0)
 
     def test_includes_roi_exactly_twenty_five(self):
-        total_cost = Decimal("10950")
         internet_price = (
-            total_cost * Decimal("1.25") / Decimal("0.84")
+            (Decimal("10000") * Decimal("1.25") + Decimal("950"))
+            / Decimal("0.84")
         )
         result = internet_compare._calculate_economics(
             {"title": "REDMOND RMC-M52", "price": 10000},
@@ -458,7 +458,7 @@ class InternetAsyncTests(unittest.IsolatedAsyncioTestCase):
 
 
 class InternetReportAndCliTests(unittest.TestCase):
-    def test_report_contains_links_and_negative_rows(self):
+    def test_report_contains_decision_columns_links_and_manual_review_comment(self):
         items = [
             {
                 "ozon_title": "REDMOND RMC-M52",
@@ -466,15 +466,15 @@ class InternetReportAndCliTests(unittest.TestCase):
                 "source": "shop.kz",
                 "sources_count": 2,
                 "ozon_price": 30000,
-                "internet_price": 29000,
+                "internet_price": 50000,
                 "commission_rate": 16,
-                "commission": 4640,
-                "net_revenue": 24360,
+                "commission": 8000,
+                "net_revenue": 40000,
                 "delivery": 2000,
                 "total_cost": 32000,
-                "price_difference": -1000,
-                "profit": -7640,
-                "roi": -23.88,
+                "price_difference": 20000,
+                "profit": 10000,
+                "roi": 33.33,
                 "match_score": 95,
                 "availability": "В наличии",
                 "ozon_url": "https://ozon.kz/product/1",
@@ -494,13 +494,15 @@ class InternetReportAndCliTests(unittest.TestCase):
             [cell.value for cell in sheet[1]],
             [title for title, _ in INTERNET_REPORT_COLUMNS],
         )
-        self.assertEqual(sheet["P2"].value, -7640)
+        self.assertEqual(sheet["E2"].value, "Shop.kz")
+        self.assertIsNotNone(sheet["E2"].comment)
+        self.assertEqual(sheet["G2"].value, 10000)
         self.assertEqual(
-            sheet["T2"].hyperlink.target,
+            sheet["I2"].hyperlink.target,
             items[0]["ozon_url"],
         )
         self.assertEqual(
-            sheet["U2"].hyperlink.target,
+            sheet["J2"].hyperlink.target,
             items[0]["internet_url"],
         )
 

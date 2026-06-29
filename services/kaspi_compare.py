@@ -328,10 +328,11 @@ def _calculate_economics(
         if ozon_price <= Decimal("10000")
         else Decimal("2000")
     )
-    net_revenue = kaspi_price * Decimal("0.845")
+    fee_rate = Decimal("0.16")
+    net_revenue = kaspi_price * (Decimal("1") - fee_rate) - delivery
     total_cost = ozon_price + delivery
-    profit = net_revenue - total_cost
-    roi = profit / total_cost * Decimal("100")
+    profit = net_revenue - ozon_price
+    roi = profit / ozon_price * Decimal("100")
 
     if roi < min_roi or profit <= min_profit:
         return None

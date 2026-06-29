@@ -132,8 +132,9 @@ class EconomicsTests(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertEqual(result["delivery"], 950.0)
         self.assertEqual(result["total_cost"], 10950.0)
-        self.assertEqual(result["net_revenue"], 16900.0)
-        self.assertEqual(result["profit"], 5950.0)
+        self.assertEqual(result["net_revenue"], 15850.0)
+        self.assertEqual(result["profit"], 5850.0)
+        self.assertEqual(result["roi"], 58.5)
 
         above_boundary = kaspi_compare._calculate_economics(
             {"title": "A", "price": 10001, "url": "ozon"},
@@ -148,7 +149,7 @@ class EconomicsTests(unittest.TestCase):
             {"title": "A", "price": 10000, "url": "ozon"},
             {
                 "title": "A",
-                "price": 16508.87573964497,
+                "price": Decimal("13950") / Decimal("0.84"),
                 "url": "kaspi",
             },
             90,
@@ -156,9 +157,9 @@ class EconomicsTests(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_includes_roi_exactly_five_percent(self):
-        total_cost = Decimal("10950")
         kaspi_price = (
-            total_cost * Decimal("1.05") / Decimal("0.845")
+            (Decimal("10000") * Decimal("1.05") + Decimal("950"))
+            / Decimal("0.84")
         )
         result = kaspi_compare._calculate_economics(
             {"title": "A", "price": 10000, "url": "ozon"},
@@ -171,9 +172,9 @@ class EconomicsTests(unittest.TestCase):
         self.assertEqual(result["roi"], 5.0)
 
     def test_rejects_roi_below_five_percent(self):
-        total_cost = Decimal("10950")
         kaspi_price = (
-            total_cost * Decimal("1.0499") / Decimal("0.845")
+            (Decimal("10000") * Decimal("1.0499") + Decimal("950"))
+            / Decimal("0.84")
         )
         result = kaspi_compare._calculate_economics(
             {"title": "A", "price": 10000, "url": "ozon"},
@@ -185,9 +186,9 @@ class EconomicsTests(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_rejects_profit_exactly_minimum(self):
-        total_cost = Decimal("10950")
         kaspi_price = (
-            (total_cost + Decimal("3000")) / Decimal("0.845")
+            (Decimal("10000") + Decimal("3000") + Decimal("950"))
+            / Decimal("0.84")
         )
         result = kaspi_compare._calculate_economics(
             {"title": "A", "price": 10000, "url": "ozon"},
@@ -338,9 +339,9 @@ class ReportAndCliTests(unittest.TestCase):
             "kaspi_price": 20000,
             "delivery": 950,
             "total_cost": 10950,
-            "net_revenue": 16900,
-            "profit": 5950,
-            "roi": 54.34,
+            "net_revenue": 15850,
+            "profit": 5850,
+            "roi": 58.5,
             "match_score": 90,
             "ozon_url": "https://ozon.ru/product/1/",
             "kaspi_url": "https://kaspi.kz/shop/p/1/",
@@ -360,12 +361,16 @@ class ReportAndCliTests(unittest.TestCase):
                     [title for title, _ in REPORT_COLUMNS],
                 )
                 self.assertEqual(sheet["A2"].value, 1)
+                self.assertEqual(sheet["B2"].value, "Ozon item")
+                self.assertEqual(sheet["E2"].value, "Kaspi")
+                self.assertEqual(sheet["F2"].value, 15850)
+                self.assertEqual(sheet["G2"].value, 5850)
                 self.assertEqual(
-                    sheet["M2"].hyperlink.target,
+                    sheet["I2"].hyperlink.target,
                     item["ozon_url"],
                 )
                 self.assertEqual(
-                    sheet["N2"].hyperlink.target,
+                    sheet["J2"].hyperlink.target,
                     item["kaspi_url"],
                 )
                 self.assertEqual(sheet.freeze_panes, "A2")
