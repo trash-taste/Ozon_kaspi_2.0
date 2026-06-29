@@ -81,6 +81,12 @@ def _to_nonnegative_decimal(value: Any, name: str) -> Decimal:
     return result
 
 
+def _to_optional_nonnegative_decimal(value: Any, name: str) -> Decimal | None:
+    if value is None:
+        return None
+    return _to_nonnegative_decimal(value, name)
+
+
 def _build_search_query(product: dict[str, Any]) -> str:
     title = str(product.get("title") or "").strip()
     brand = str(product.get("brand") or "").strip()
@@ -315,8 +321,8 @@ def _calculate_economics(
     ozon_product: dict[str, Any],
     kaspi_product: dict[str, Any],
     match_score: float,
-    min_roi: Decimal = Decimal("25"),
-    min_profit: Decimal = Decimal("3000"),
+    min_roi: Decimal | None = None,
+    min_profit: Decimal | None = None,
 ) -> dict[str, Any] | None:
     ozon_price = _to_decimal(ozon_product.get("price"))
     kaspi_price = _to_decimal(kaspi_product.get("price"))
@@ -334,7 +340,9 @@ def _calculate_economics(
     profit = net_revenue - ozon_price
     roi = profit / ozon_price * Decimal("100")
 
-    if roi < min_roi or profit <= min_profit:
+    if min_roi is not None and roi < min_roi:
+        return None
+    if min_profit is not None and profit <= min_profit:
         return None
 
     money = lambda value: float(
@@ -361,59 +369,95 @@ def _calculate_economics(
     }
 
 
+def _build_unmatched_result(product: dict[str, Any]) -> dict[str, Any]:
+    ozon_price = _to_decimal(product.get("price"))
+
+    def money(value: Decimal | None) -> float | None:
+        if value is None:
+            return None
+        return float(
+            value.quantize(MONEY_QUANT, rounding=ROUND_HALF_UP)
+        )
+
+    return {
+        "matched": False,
+        "ozon_title": str(product.get("title") or ""),
+        "ozon_price": money(ozon_price),
+        "ozon_url": str(product.get("url") or ""),
+        "brand": product.get("brand") or None,
+        "ozon_article": product.get("article") or None,
+        "ozon_category": product.get("category") or None,
+        "kaspi_title": "Не найдено точное совпадение",
+        "kaspi_price": None,
+        "kaspi_url": "",
+        "kaspi_brand": None,
+        "kaspi_article": None,
+        "delivery": None,
+        "total_cost": None,
+        "net_revenue": None,
+        "profit": None,
+        "roi": None,
+        "match_score": None,
+    }
+
+
 async def _compare_one(
     product: dict[str, Any],
-    min_roi: Decimal,
-    min_profit: Decimal,
+    min_roi: Decimal | None,
+    min_profit: Decimal | None,
 ) -> tuple[bool, dict[str, Any] | None]:
     try:
         query = _build_search_query(product)
         if not query:
-            return False, None
+            return False, _build_unmatched_result(product)
 
         candidates = await search_kaspi_product(query)
         selected = _select_candidate(product, candidates)
         if selected is None:
-            return False, None
+            return False, _build_unmatched_result(product)
 
         kaspi_product, match_score = selected
-        return True, _calculate_economics(
+        item = _calculate_economics(
             product,
             kaspi_product,
             match_score,
             min_roi=min_roi,
             min_profit=min_profit,
         )
+        return True, item
     except Exception:
         logger.exception(
             "Неожиданная ошибка сравнения с Kaspi: product=%r",
             product.get("title") if isinstance(product, dict) else product,
         )
-        return False, None
+        return False, _build_unmatched_result(product)
 
 
 async def compare_with_kaspi(
     ozon_products: list[dict],
-    min_roi: Decimal | float | int | str = 25,
-    min_profit: Decimal | float | int | str = 3000,
+    min_roi: Decimal | float | int | str | None = None,
+    min_profit: Decimal | float | int | str | None = None,
 ) -> list[dict]:
-    """Сравнивает товары Ozon с Kaspi и возвращает прибыльные совпадения."""
-    min_roi_decimal = _to_nonnegative_decimal(min_roi, "min_roi")
-    min_profit_decimal = _to_nonnegative_decimal(
+    """Сравнивает товары Ozon с Kaspi и возвращает строки отчета."""
+    min_roi_decimal = _to_optional_nonnegative_decimal(min_roi, "min_roi")
+    min_profit_decimal = _to_optional_nonnegative_decimal(
         min_profit,
         "min_profit",
     )
     logger.info("Получено товаров Ozon для сравнения: %s", len(ozon_products))
-    logger.info(
-        "Финансовые фильтры: ROI >= %s%%, прибыль > %s ₸",
-        min_roi_decimal,
-        min_profit_decimal,
-    )
+    if min_roi_decimal is not None or min_profit_decimal is not None:
+        logger.info(
+            "Финансовые фильтры: ROI >= %s%%, прибыль > %s ₸",
+            min_roi_decimal if min_roi_decimal is not None else "не задан",
+            min_profit_decimal if min_profit_decimal is not None else "не задана",
+        )
+    else:
+        logger.info("Финансовые фильтры отключены: в отчет попадут все товары")
 
     timeout = aiohttp.ClientTimeout(total=REQUEST_TIMEOUT_SECONDS)
     context_token: Token[_SearchContext | None] | None = None
     matched_count = 0
-    filtered_items: list[dict[str, Any]] = []
+    report_items: list[dict[str, Any]] = []
 
     async with aiohttp.ClientSession(timeout=timeout) as session:
         context = _SearchContext(
@@ -450,15 +494,18 @@ async def compare_with_kaspi(
         if matched:
             matched_count += 1
         if item is not None:
-            filtered_items.append(item)
+            report_items.append(item)
 
-    filtered_items.sort(
-        key=lambda item: (item["roi"], item["profit"]),
+    report_items.sort(
+        key=lambda item: (
+            item.get("roi") if item.get("roi") is not None else -10**9,
+            item.get("profit") if item.get("profit") is not None else -10**9,
+        ),
         reverse=True,
     )
     logger.info("Найдено допустимых совпадений Kaspi: %s", matched_count)
     logger.info(
-        "Товаров прошло фильтр ROI и прибыли: %s",
-        len(filtered_items),
+        "Строк в Kaspi-отчете: %s",
+        len(report_items),
     )
-    return filtered_items
+    return report_items

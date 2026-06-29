@@ -14,7 +14,6 @@ logger = logging.getLogger(__name__)
 REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
 MONEY_QUANT = Decimal("0.01")
 FEE_RATE = Decimal("0.16")
-MIN_REPORT_ROI = Decimal("25")
 
 REPORT_COLUMNS = [
     ("№", None),
@@ -116,15 +115,28 @@ def _decision_rows(
     for item in items:
         ozon_price = _to_decimal(item.get("ozon_price"))
         sale_price = _to_decimal(item.get(sale_price_key))
-        if ozon_price is None or sale_price is None or ozon_price <= 0:
+        if ozon_price is not None and ozon_price <= 0:
+            ozon_price = None
+
+        product_title = str(
+            item.get("ozon_title")
+            or item.get("title")
+            or item.get("internet_title")
+            or item.get("kaspi_title")
+            or ""
+        )
+        ozon_url = str(item.get("ozon_url") or "")
+        if not product_title and not ozon_url:
             continue
 
         source_url = str(item.get(source_url_key) or "")
-        source = _source_label(
-            item.get("source"),
-            source_url,
-            default=default_source,
-        )
+        source = ""
+        if sale_price is not None:
+            source = _source_label(
+                item.get("source"),
+                source_url,
+                default=default_source,
+            )
         fee_rate = _to_decimal(item.get("commission_rate"))
         if fee_rate is None:
             fee_rate = FEE_RATE
@@ -132,26 +144,25 @@ def _decision_rows(
             fee_rate = fee_rate / Decimal("100")
 
         row = {
-            "product_title": str(
-                item.get("ozon_title")
-                or item.get("title")
-                or item.get("internet_title")
-                or item.get("kaspi_title")
-                or ""
-            ),
-            "ozon_price": _money(ozon_price),
-            "sale_price": _money(sale_price),
+            "product_title": product_title,
+            "ozon_price": _money(ozon_price) if ozon_price is not None else None,
+            "sale_price": _money(sale_price) if sale_price is not None else None,
             "source": source,
-            "ozon_url": str(item.get("ozon_url") or ""),
+            "ozon_url": ozon_url,
             "source_url": source_url,
-            **_calculate_decision_financials(
-                ozon_price,
-                sale_price,
-                fee_rate=fee_rate,
-            ),
+            "net_from_kaspi": None,
+            "profit": None,
+            "roi": None,
         }
-        if Decimal(str(row["roi"])) >= MIN_REPORT_ROI:
-            rows.append(row)
+        if ozon_price is not None and sale_price is not None:
+            row.update(
+                _calculate_decision_financials(
+                    ozon_price,
+                    sale_price,
+                    fee_rate=fee_rate,
+                )
+            )
+        rows.append(row)
 
     rows.sort(
         key=lambda row: (row.get("roi") or -10**9, row.get("profit") or -10**9),

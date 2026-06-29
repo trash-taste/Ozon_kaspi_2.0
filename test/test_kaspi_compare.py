@@ -153,6 +153,8 @@ class EconomicsTests(unittest.TestCase):
                 "url": "kaspi",
             },
             90,
+            min_roi=Decimal("25"),
+            min_profit=Decimal("3000"),
         )
         self.assertIsNone(result)
 
@@ -328,6 +330,27 @@ class KaspiAsyncTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(results[0]["roi"], results[1]["roi"])
         self.assertEqual(results[0]["kaspi_url"], "kaspi-1")
 
+    async def test_compare_keeps_unmatched_products_in_report(self):
+        product = {
+            "title": "Unknown product",
+            "price": 10000,
+            "url": "ozon-1",
+            "brand": None,
+            "article": None,
+            "category": None,
+        }
+
+        with patch(
+            "services.kaspi_compare.search_kaspi_product",
+            new=AsyncMock(return_value=[]),
+        ):
+            results = await kaspi_compare.compare_with_kaspi([product])
+
+        self.assertEqual(len(results), 1)
+        self.assertFalse(results[0]["matched"])
+        self.assertEqual(results[0]["ozon_title"], "Unknown product")
+        self.assertIsNone(results[0]["kaspi_price"])
+
 
 class ReportAndCliTests(unittest.TestCase):
     def test_report_contains_headers_links_and_empty_rows(self):
@@ -346,13 +369,27 @@ class ReportAndCliTests(unittest.TestCase):
             "ozon_url": "https://ozon.ru/product/1/",
             "kaspi_url": "https://kaspi.kz/shop/p/1/",
         }
+        low_roi = {
+            "ozon_title": "Low ROI item",
+            "ozon_price": 10000,
+            "kaspi_price": 12000,
+            "ozon_url": "https://ozon.ru/product/2/",
+            "kaspi_url": "https://kaspi.kz/shop/p/2/",
+        }
+        unmatched = {
+            "ozon_title": "No match item",
+            "ozon_price": 10000,
+            "kaspi_price": None,
+            "ozon_url": "https://ozon.ru/product/3/",
+            "kaspi_url": "",
+        }
 
         with tempfile.TemporaryDirectory() as temp_dir:
             with patch(
                 "services.report.REPORTS_DIR",
                 Path(temp_dir),
             ):
-                report_path = save_arbitrage_report([item])
+                report_path = save_arbitrage_report([low_roi, unmatched, item])
                 workbook = load_workbook(report_path)
                 sheet = workbook.active
 
@@ -373,6 +410,11 @@ class ReportAndCliTests(unittest.TestCase):
                     sheet["J2"].hyperlink.target,
                     item["kaspi_url"],
                 )
+                self.assertEqual(sheet["B3"].value, "Low ROI item")
+                self.assertLess(sheet["H3"].value, 25)
+                self.assertEqual(sheet["B4"].value, "No match item")
+                self.assertIsNone(sheet["D4"].value)
+                self.assertIsNone(sheet["H4"].value)
                 self.assertEqual(sheet.freeze_panes, "A2")
 
                 empty_path = save_arbitrage_report([])

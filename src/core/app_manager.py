@@ -508,7 +508,7 @@ class AppManager:
             report_path = save_arbitrage_report(arbitrage_items)
             caption = (
                 "Сравнение с Kaspi завершено.\n"
-                f"Подходящих товаров: {len(arbitrage_items)}.\n"
+                f"Строк в отчете: {len(arbitrage_items)}.\n"
                 "Excel-файл готов."
             )
             self._send_files_to_telegram(

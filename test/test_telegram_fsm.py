@@ -197,7 +197,7 @@ class TelegramKaspiIntegrationTests(unittest.TestCase):
         app_manager._send_files_to_telegram.assert_called_once()
         send_args = app_manager._send_files_to_telegram.call_args
         self.assertEqual(send_args.args[:2], ("/tmp/arbitrage.xlsx", "123"))
-        self.assertIn("Подходящих товаров: 1", send_args.kwargs["caption"])
+        self.assertIn("Строк в отчете: 1", send_args.kwargs["caption"])
 
     def test_excel_export_returns_telegram_send_result(self):
         app_manager = AppManager.__new__(AppManager)
