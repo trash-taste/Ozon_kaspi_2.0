@@ -345,14 +345,10 @@ def _select_candidate(
     ozon_product: dict[str, Any],
     candidates: list[dict[str, Any]],
 ) -> tuple[dict[str, Any], float] | None:
-    ozon_price = _to_decimal(ozon_product.get("price"))
-    if ozon_price is None:
-        return None
-
     accepted: list[tuple[dict[str, Any], float, Decimal]] = []
     for candidate in candidates:
         kaspi_price = _to_decimal(candidate.get("price"))
-        if kaspi_price is None or kaspi_price > ozon_price * Decimal("3"):
+        if kaspi_price is None:
             continue
 
         score = _calculate_match_score(ozon_product, candidate)

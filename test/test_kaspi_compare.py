@@ -121,12 +121,16 @@ class KaspiQueryAndMatchingTests(unittest.TestCase):
         self.assertEqual(selected[0]["url"], "near")
         self.assertEqual(selected[1], 86.0)
 
-    def test_rejects_suspicious_price_over_three_times_ozon(self):
+    def test_allows_high_kaspi_price_when_model_matches(self):
         ozon = {"title": "Товар", "price": 10000}
         candidates = [
-            {"title": "Товар", "price": 30001, "url": "suspicious"}
+            {"title": "Товар", "price": 30001, "url": "high-price"}
         ]
-        self.assertIsNone(kaspi_compare._select_candidate(ozon, candidates))
+
+        selected = kaspi_compare._select_candidate(ozon, candidates)
+
+        self.assertIsNotNone(selected)
+        self.assertEqual(selected[0]["url"], "high-price")
 
     def test_normalizes_kaspi_card_url_and_sale_price(self):
         candidate = kaspi_compare._normalize_kaspi_card(
