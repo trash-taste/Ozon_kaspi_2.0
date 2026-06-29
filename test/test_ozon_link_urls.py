@@ -153,6 +153,22 @@ class OzonProductURLTests(unittest.TestCase):
             },
         )
 
+    def test_builds_search_fallback_from_short_link_meta_title(self):
+        self.parser.driver = SimpleNamespace(
+            current_url="https://ozon.kz/t/7WjRGFO?__rr=1",
+            page_source="""
+            <html><head>
+            <meta property="og:title"
+                  content="tp link - купить на OZON в Казахстане">
+            </head><body></body></html>
+            """,
+        )
+
+        self.assertEqual(
+            self.parser._build_search_url_from_og_title(),
+            "https://www.ozon.kz/search/?text=tp%20link",
+        )
+
     def test_listing_metadata_prefers_card_price_over_regular_price(self):
         html = r'''
         <script>

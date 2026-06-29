@@ -3,9 +3,11 @@ import logging
 import os
 import re
 import time
+import html
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Tuple
+from urllib.parse import quote
 
 from ..utils.resource_manager import resource_manager
 from ..utils.selenium_manager import SeleniumManager
@@ -60,7 +62,11 @@ class OzonLinkParser:
                 self._save_debug_snapshot("initial_load_failed")
                 return False, {}
 
-            self._wait_for_short_redirect()
+            if not self._wait_for_short_redirect():
+                if not self._open_short_link_fallback_search():
+                    self._save_debug_snapshot("short_link_no_redirect")
+                    self._save_links()
+                    return False, {}
             self._collect_products()
             self._save_links()
 
@@ -107,18 +113,77 @@ class OzonLinkParser:
                 pass
             time.sleep(0.5)
 
-    def _wait_for_short_redirect(self) -> None:
+    def _wait_for_short_redirect(self) -> bool:
         if not self.driver:
-            return
+            return False
         for _ in range(12):
             current_url = getattr(self.driver, "current_url", "") or ""
-            if not re.search(r"/t/[^/?#]+", current_url):
-                return
+            if not self._is_short_link(current_url):
+                return True
             time.sleep(1)
         logger.warning(
             "Короткая ссылка Ozon не отдала редирект: %s",
             getattr(self.driver, "current_url", ""),
         )
+        return False
+
+    def _open_short_link_fallback_search(self) -> bool:
+        fallback_url = self._build_search_url_from_og_title()
+        if not fallback_url:
+            return False
+
+        logger.warning(
+            "Пробуем открыть поиск Ozon вместо короткой ссылки: %s",
+            fallback_url,
+        )
+        self.category_url = fallback_url
+        return self._open_page(fallback_url)
+
+    def _build_search_url_from_og_title(self) -> str:
+        if not self.driver:
+            return ""
+
+        source = getattr(self.driver, "page_source", "") or ""
+        for tag in re.findall(r"<meta\b[^>]*>", source, flags=re.IGNORECASE):
+            if "og:title" not in tag:
+                continue
+            match = re.search(
+                r"\bcontent=(['\"])(.*?)\1",
+                tag,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            if not match:
+                continue
+
+            title = html.unescape(match.group(2))
+            query = self._clean_og_title_query(title)
+            if query:
+                return f"https://www.ozon.kz/search/?text={quote(query)}"
+
+        return ""
+
+    @staticmethod
+    def _clean_og_title_query(title: str) -> str:
+        query = re.sub(r"\s+", " ", title or "").strip()
+        query = re.sub(
+            r"\s*[-–—]\s*купить\b.*$",
+            "",
+            query,
+            flags=re.IGNORECASE,
+        )
+        query = re.sub(
+            r"\s*[-–—]\s*OZON\b.*$",
+            "",
+            query,
+            flags=re.IGNORECASE,
+        )
+        if len(query) < 2 or "ozon" == query.casefold():
+            return ""
+        return query
+
+    @staticmethod
+    def _is_short_link(url: str) -> bool:
+        return bool(re.search(r"/t/[^/?#]+", url or ""))
 
     def _collect_products(self) -> None:
         idle_limit = max(3, int(os.getenv("OZON_LINK_IDLE_SCROLLS", "7")))
