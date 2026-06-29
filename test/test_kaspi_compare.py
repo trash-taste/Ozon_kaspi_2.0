@@ -43,6 +43,26 @@ class KaspiQueryAndMatchingTests(unittest.TestCase):
             ),
             "Телефон",
         )
+        self.assertEqual(
+            kaspi_compare._build_search_query(
+                {
+                    "title": "Tp-Link TX401 Сетевой адаптер",
+                    "brand": "TP-Link",
+                    "article": None,
+                }
+            ),
+            "TP-Link TX401",
+        )
+        self.assertEqual(
+            kaspi_compare._build_search_query(
+                {
+                    "title": "REDMOND Мультипекарь RMB-M614/1 700 Вт",
+                    "brand": "REDMOND",
+                    "article": None,
+                }
+            ),
+            "REDMOND RMB-M614/1",
+        )
 
     def test_brand_penalty_and_article_rejection(self):
         ozon = {

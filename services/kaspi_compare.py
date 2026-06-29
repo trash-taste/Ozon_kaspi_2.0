@@ -60,17 +60,23 @@ def _normalize_article(value: Any) -> str:
     return re.sub(r"[^a-zа-я0-9]", "", _normalize_text(value))
 
 
-def _extract_model_tokens(value: Any) -> set[str]:
+def _extract_raw_model_tokens(value: Any) -> list[str]:
     text = unicodedata.normalize("NFKC", str(value or "")).upper()
     text = text.replace("–", "-").replace("—", "-")
-    tokens = re.findall(
-        r"(?<![A-Z0-9])[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*(?:/[A-Z0-9]+)?",
-        text,
-    )
+    return [
+        token
+        for token in re.findall(
+            r"(?<![A-Z0-9])[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*(?:/[A-Z0-9]+)?",
+            text,
+        )
+        if len(token) >= 3 and any(char.isdigit() for char in token)
+    ]
+
+
+def _extract_model_tokens(value: Any) -> set[str]:
     return {
         re.sub(r"[^A-Z0-9]", "", token)
-        for token in tokens
-        if len(token) >= 3 and any(char.isdigit() for char in token)
+        for token in _extract_raw_model_tokens(value)
     }
 
 
@@ -107,7 +113,19 @@ def _build_search_query(product: dict[str, Any]) -> str:
     brand = str(product.get("brand") or "").strip()
     article = str(product.get("article") or "").strip()
 
-    parts = [part for part in (brand, article, title) if part]
+    model_tokens = _extract_raw_model_tokens(title)
+    if model_tokens:
+        parts = [part for part in (brand, *model_tokens[:2]) if part]
+        return re.sub(r"\s+", " ", " ".join(parts)).strip()
+
+    normalized_title = _normalize_text(title)
+    parts = []
+    if brand and _normalize_text(brand) not in normalized_title:
+        parts.append(brand)
+    if article and _normalize_text(article) not in normalized_title:
+        parts.append(article)
+    if title:
+        parts.append(title)
     return re.sub(r"\s+", " ", " ".join(parts)).strip()
 
 
