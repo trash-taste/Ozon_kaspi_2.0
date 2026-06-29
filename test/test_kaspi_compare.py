@@ -118,7 +118,7 @@ class KaspiQueryAndMatchingTests(unittest.TestCase):
         self.assertEqual(candidate["price"], 19000.0)
         self.assertEqual(
             candidate["url"],
-            "https://kaspi.kz/shop/p/test-123/",
+            "https://kaspi.kz/shop/almaty/p/test-123/",
         )
 
 
@@ -226,9 +226,11 @@ class FakeSession:
     def __init__(self, responses):
         self.responses = list(responses)
         self.calls = 0
+        self.last_kwargs = None
 
     def get(self, *args, **kwargs):
         self.calls += 1
+        self.last_kwargs = kwargs
         return self.responses.pop(0)
 
 
@@ -250,6 +252,37 @@ class KaspiAsyncTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(cards, [{"id": "1"}])
         self.assertEqual(session.calls, 3)
+
+    async def test_kaspi_request_uses_city_referer_and_proxy(self):
+        session = FakeSession(
+            [FakeResponse(payload={"data": {"cards": []}})]
+        )
+
+        with patch.dict(
+            "os.environ",
+            {
+                "KASPI_PROXY_URL": "http://proxy.local:8080",
+                "KASPI_CITY_SLUG": "almaty",
+                "KASPI_CITY_ID": "750000000",
+            },
+        ):
+            cards = await kaspi_compare._request_kaspi_page(
+                session,
+                asyncio.Semaphore(1),
+                "TP-Link RE705X",
+                0,
+            )
+
+        self.assertEqual(cards, [])
+        self.assertEqual(
+            session.last_kwargs["headers"]["Referer"],
+            "https://kaspi.kz/shop/almaty/search/?text=TP-Link%20RE705X",
+        )
+        self.assertEqual(session.last_kwargs["params"]["c"], "750000000")
+        self.assertEqual(
+            session.last_kwargs["proxy"],
+            "http://proxy.local:8080",
+        )
 
     async def test_compare_timeout_returns_empty_report_data(self):
         product = {

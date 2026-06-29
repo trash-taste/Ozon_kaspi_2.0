@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 KASPI_SEARCH_URL = "https://kaspi.kz/yml/product-view/pl/filters"
 KASPI_BASE_URL = "https://kaspi.kz"
 DEFAULT_CITY_ID = "750000000"
+DEFAULT_CITY_SLUG = "almaty"
 MATCH_THRESHOLD = 72.0
 BRAND_MISMATCH_PENALTY = 15.0
 NEAR_BEST_SCORE_DELTA = 5.0
@@ -96,6 +97,42 @@ def _build_search_query(product: dict[str, Any]) -> str:
     return re.sub(r"\s+", " ", " ".join(parts)).strip()
 
 
+def _kaspi_city_id() -> str:
+    return os.getenv("KASPI_CITY_ID", DEFAULT_CITY_ID).strip() or DEFAULT_CITY_ID
+
+
+def _kaspi_city_slug() -> str:
+    slug = os.getenv("KASPI_CITY_SLUG", DEFAULT_CITY_SLUG).strip().strip("/")
+    return slug or DEFAULT_CITY_SLUG
+
+
+def _kaspi_proxy_url() -> str | None:
+    proxy = (
+        os.getenv("KASPI_PROXY_URL")
+        or os.getenv("OZON_PROXY_URL")
+        or ""
+    ).strip()
+    return proxy or None
+
+
+def _kaspi_search_referer(query: str) -> str:
+    return (
+        f"{KASPI_BASE_URL}/shop/{_kaspi_city_slug()}/search/"
+        f"?text={quote(query)}"
+    )
+
+
+def _normalize_kaspi_url(shop_link: str) -> str:
+    city_slug = _kaspi_city_slug()
+    if shop_link.startswith("/p/"):
+        return f"{KASPI_BASE_URL}/shop/{city_slug}{shop_link}"
+    if shop_link.startswith("/shop/p/"):
+        return f"{KASPI_BASE_URL}/shop/{city_slug}{shop_link[5:]}"
+    if shop_link.startswith("/"):
+        return f"{KASPI_BASE_URL}{shop_link}"
+    return shop_link.replace("/shop/p/", f"/shop/{city_slug}/p/")
+
+
 def _brands_differ(ozon_brand: Any, kaspi_brand: Any) -> bool:
     left = _normalize_text(ozon_brand)
     right = _normalize_text(kaspi_brand)
@@ -138,10 +175,7 @@ def _normalize_kaspi_card(card: dict[str, Any]) -> dict[str, Any] | None:
     if not title or not shop_link or price is None:
         return None
 
-    if shop_link.startswith("/p/"):
-        shop_link = f"{KASPI_BASE_URL}/shop{shop_link}"
-    elif shop_link.startswith("/"):
-        shop_link = f"{KASPI_BASE_URL}{shop_link}"
+    shop_link = _normalize_kaspi_url(shop_link)
 
     return {
         "title": title,
@@ -159,7 +193,7 @@ async def _request_kaspi_page(
     query: str,
     page: int,
 ) -> list[dict[str, Any]]:
-    city_id = os.getenv("KASPI_CITY_ID", DEFAULT_CITY_ID).strip()
+    city_id = _kaspi_city_id()
     params = {
         "text": query,
         "page": page,
@@ -173,21 +207,27 @@ async def _request_kaspi_page(
     headers = {
         "Accept": "application/json, text/plain, */*",
         "Accept-Language": "ru-RU,ru;q=0.9",
-        "Referer": f"https://kaspi.kz/shop/search/?text={quote(query)}",
+        "Referer": _kaspi_search_referer(query),
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
             "AppleWebKit/537.36 (KHTML, like Gecko) "
             "Chrome/149.0 Safari/537.36"
         ),
     }
+    request_kwargs = {
+        "params": params,
+        "headers": headers,
+    }
+    proxy = _kaspi_proxy_url()
+    if proxy:
+        request_kwargs["proxy"] = proxy
 
     for attempt in range(1, REQUEST_RETRIES + 1):
         try:
             async with semaphore:
                 async with session.get(
                     KASPI_SEARCH_URL,
-                    params=params,
-                    headers=headers,
+                    **request_kwargs,
                 ) as response:
                     response.raise_for_status()
                     payload = await response.json(content_type=None)
