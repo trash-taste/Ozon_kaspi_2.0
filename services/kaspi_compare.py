@@ -60,6 +60,20 @@ def _normalize_article(value: Any) -> str:
     return re.sub(r"[^a-zа-я0-9]", "", _normalize_text(value))
 
 
+def _extract_model_tokens(value: Any) -> set[str]:
+    text = unicodedata.normalize("NFKC", str(value or "")).upper()
+    text = text.replace("–", "-").replace("—", "-")
+    tokens = re.findall(
+        r"(?<![A-Z0-9])[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*(?:/[A-Z0-9]+)?",
+        text,
+    )
+    return {
+        re.sub(r"[^A-Z0-9]", "", token)
+        for token in tokens
+        if len(token) >= 3 and any(char.isdigit() for char in token)
+    }
+
+
 def _to_decimal(value: Any) -> Decimal | None:
     if value is None or isinstance(value, bool):
         return None
@@ -155,6 +169,11 @@ def _calculate_match_score(
     ozon_title = _normalize_text(ozon_product.get("title"))
     kaspi_title = _normalize_text(kaspi_product.get("title"))
     if not ozon_title or not kaspi_title:
+        return None
+
+    ozon_models = _extract_model_tokens(ozon_product.get("title"))
+    kaspi_models = _extract_model_tokens(kaspi_product.get("title"))
+    if ozon_models and kaspi_models and not (ozon_models & kaspi_models):
         return None
 
     score = float(fuzz.WRatio(ozon_title, kaspi_title))

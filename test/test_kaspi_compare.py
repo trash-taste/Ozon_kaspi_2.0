@@ -77,6 +77,30 @@ class KaspiQueryAndMatchingTests(unittest.TestCase):
             kaspi_compare._calculate_match_score(ozon, other_article)
         )
 
+    def test_rejects_different_model_tokens(self):
+        ozon = {
+            "title": "Tp-Link TX401 Сетевой адаптер",
+            "brand": "TP-Link",
+            "article": None,
+        }
+        wrong_model = {
+            "title": "Wi-Fi адаптер TP-LINK Сетевая карта TP-Link TX201",
+            "brand": "TP-Link",
+            "article": None,
+        }
+        same_model = {
+            "title": "TP-LINK TX401 V2.0",
+            "brand": "TP-Link",
+            "article": None,
+        }
+
+        self.assertIsNone(
+            kaspi_compare._calculate_match_score(ozon, wrong_model)
+        )
+        self.assertIsNotNone(
+            kaspi_compare._calculate_match_score(ozon, same_model)
+        )
+
     def test_selects_cheapest_candidate_close_to_best_score(self):
         ozon = {"title": "Товар", "price": 10000}
         candidates = [
