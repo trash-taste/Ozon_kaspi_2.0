@@ -119,12 +119,19 @@ def collect_price_debug(page_source: str) -> dict[str, Any]:
     }
 
 
-def load_page_source_from_url(url: str, headless: bool) -> str:
+def load_page_source_from_url(
+    url: str,
+    headless: bool,
+    screenshot: str = "",
+) -> str:
     manager = SeleniumManager(headless=headless)
     driver = manager.create_driver()
     try:
         if not manager.navigate_to_url(url):
             raise RuntimeError(f"Failed to open {url}")
+        if screenshot:
+            Path(screenshot).parent.mkdir(parents=True, exist_ok=True)
+            driver.save_screenshot(screenshot)
         return driver.page_source
     finally:
         manager.close()
@@ -138,6 +145,7 @@ def main() -> int:
     parser.add_argument("--html", action="store_true", help="Read target as HTML file")
     parser.add_argument("--headful", action="store_true", help="Show browser window")
     parser.add_argument("--output", help="Optional JSON output path")
+    parser.add_argument("--screenshot", help="Optional PNG screenshot path")
     args = parser.parse_args()
 
     if args.html:
@@ -146,6 +154,7 @@ def main() -> int:
         page_source = load_page_source_from_url(
             args.target,
             headless=not args.headful,
+            screenshot=args.screenshot or "",
         )
 
     debug_data = collect_price_debug(page_source)
