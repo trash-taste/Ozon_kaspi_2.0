@@ -12,6 +12,7 @@ services:
       PYTHONUNBUFFERED: "1"
       APP_MANAGER_MODE: "queue"
       PARSER_RUNTIME_DIR: /app/runtime
+      OZON_PRICE_OVERRIDES_FILE: /app/runtime/ozon_price_overrides.json
     volumes:
       - ./config.txt:/app/config.txt
       - ./output:/app/output
@@ -34,6 +35,7 @@ services:
       CHROMEDRIVER_PATH: /usr/bin/chromedriver
       PYTHONUNBUFFERED: "1"
       PARSER_RUNTIME_DIR: /app/runtime
+      OZON_PRICE_OVERRIDES_FILE: /app/runtime/ozon_price_overrides.json
       OZON_LINK_PARSER: "selenium"
       OZON_PRODUCT_PARSER: "selenium"
       OZON_PAGE_LOAD_TIMEOUT: "30"
