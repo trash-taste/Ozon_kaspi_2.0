@@ -13,6 +13,10 @@ from ..parsers.seller_parser import OzonSellerParser
 from ..utils.excel_exporter import ExcelExporter
 from ..telegram.bot_manager import TelegramBotManager
 from ..utils.resource_manager import resource_manager
+from ..utils.ozon_price_overrides import (
+    find_ozon_price_override,
+    load_ozon_price_overrides,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -143,6 +147,12 @@ class AppManager:
             # Принудительно закрываем все воркеры продуктов перед началом парсинга продавцов
             product_parser.cleanup()
 
+            overrides_applied = self._apply_ozon_price_overrides(
+                product_results,
+                product_links,
+                user_id,
+            )
+
             parsed_products = len(
                 [product for product in product_results if product.success]
             )
@@ -155,7 +165,12 @@ class AppManager:
                 user_id,
                 "Обработка карточек завершена: "
                 f"{parsed_products}/{len(product_results)} успешно. "
-                "Продолжаю подготовку отчета.",
+                + (
+                    f"Ручных цен Ozon применено: {overrides_applied}. "
+                    if overrides_applied
+                    else ""
+                )
+                + "Продолжаю подготовку отчета.",
             )
             
             if self.stop_event.is_set():
@@ -283,6 +298,72 @@ class AppManager:
             headless=self.settings.HEADLESS,
         )
 
+    def _apply_ozon_price_overrides(
+        self,
+        products: list,
+        product_links: dict[str, Any],
+        user_id: str = None,
+    ) -> int:
+        overrides = load_ozon_price_overrides(self.settings.BASE_DIR)
+        if not overrides:
+            return 0
+
+        applied = 0
+        for product in products:
+            if not getattr(product, "success", False):
+                continue
+
+            product_url = self._find_product_url(product, product_links)
+            override_price, override_key = find_ozon_price_override(
+                overrides,
+                article=str(getattr(product, "article", "") or ""),
+                url=product_url,
+                title=str(getattr(product, "name", "") or ""),
+            )
+            if not override_price:
+                continue
+
+            parser_price = int(
+                getattr(product, "price", 0)
+                or getattr(product, "card_price", 0)
+                or 0
+            )
+            if parser_price == override_price:
+                continue
+
+            product.ozon_parser_price = parser_price
+            product.price = override_price
+            product.card_price = override_price
+            product.ozon_price_source = "manual_override"
+            product.ozon_price_override_key = override_key
+            applied += 1
+
+            logger.warning(
+                "Ручная цена Ozon применена: article=%s key=%s parser=%s manual=%s",
+                getattr(product, "article", ""),
+                override_key,
+                parser_price,
+                override_price,
+            )
+
+        if applied:
+            self._notify_user(
+                user_id,
+                f"Применил ручные цены Ozon: {applied} товар(ов).",
+            )
+        return applied
+
+    def _find_product_url(self, product: Any, product_links: dict[str, Any]) -> str:
+        article = str(getattr(product, "article", "") or "").strip()
+        return next(
+            (
+                url
+                for url in product_links
+                if article and article in url
+            ),
+            "",
+        )
+
 
     def _save_results_to_file(self, user_id: str = None):
         try:
@@ -311,11 +392,10 @@ class AppManager:
             }
             
             for product in results.get('products', []):
-                product_url = ""
-                for url in results.get('links', {}).keys():
-                    if product.article in url:
-                        product_url = url
-                        break
+                product_url = self._find_product_url(
+                    product,
+                    results.get('links', {}),
+                )
                 
                 seller_info = results.get('seller_data', {}).get(product.seller_id, None)
                 
@@ -350,6 +430,21 @@ class AppManager:
                     'card_price': product.card_price,
                     'price': product.price,
                     'original_price': product.original_price,
+                    'ozon_parser_price': getattr(
+                        product,
+                        'ozon_parser_price',
+                        product.price,
+                    ),
+                    'ozon_price_source': getattr(
+                        product,
+                        'ozon_price_source',
+                        'parser',
+                    ),
+                    'ozon_price_override_key': getattr(
+                        product,
+                        'ozon_price_override_key',
+                        '',
+                    ),
                     'product_url': product_url,
                     'success': product.success,
                     'error': product.error
@@ -379,11 +474,10 @@ class AppManager:
             export_data = {'products': []}
             
             for product in results.get('products', []):
-                product_url = ""
-                for url in results.get('links', {}).keys():
-                    if product.article in url:
-                        product_url = url
-                        break
+                product_url = self._find_product_url(
+                    product,
+                    results.get('links', {}),
+                )
                 
                 seller_info = results.get('seller_data', {}).get(product.seller_id, None)
                 
@@ -415,6 +509,21 @@ class AppManager:
                     'card_price': product.card_price,
                     'price': product.price,
                     'original_price': product.original_price,
+                    'ozon_parser_price': getattr(
+                        product,
+                        'ozon_parser_price',
+                        product.price,
+                    ),
+                    'ozon_price_source': getattr(
+                        product,
+                        'ozon_price_source',
+                        'parser',
+                    ),
+                    'ozon_price_override_key': getattr(
+                        product,
+                        'ozon_price_override_key',
+                        '',
+                    ),
                     'product_url': product_url,
                     'success': product.success,
                     'error': product.error
@@ -461,16 +570,9 @@ class AppManager:
             if not title or not price:
                 continue
 
-            ozon_article = str(
-                getattr(product, "article", "") or ""
-            ).strip()
-            product_url = next(
-                (
-                    url
-                    for url in product_links
-                    if ozon_article and ozon_article in url
-                ),
-                "",
+            product_url = self._find_product_url(
+                product,
+                product_links,
             )
             normalized_products.append(
                 {

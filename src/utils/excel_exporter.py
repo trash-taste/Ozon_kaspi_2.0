@@ -27,6 +27,8 @@ class ExcelExporter:
                 'inn': ('ИНН', lambda p: p.get('seller', {}).get('inn', '')),
                 'card_price': ('Цена карты', lambda p: p.get('card_price', 0)),
                 'price': ('Цена', lambda p: p.get('price', 0)),
+                'ozon_parser_price': ('Цена парсера Ozon', lambda p: p.get('ozon_parser_price', 0)),
+                'ozon_price_source': ('Источник цены Ozon', lambda p: p.get('ozon_price_source', '')),
                 'original_price': ('Старая цена', lambda p: p.get('original_price', 0)),
                 'product_url': ('Ссылка товара', lambda p: p.get('product_url', '')),
                 'image_url': ('Изображение', lambda p: p.get('image_url', '')),
@@ -84,7 +86,7 @@ class ExcelExporter:
             
             # Ширина колонок (адаптивная)
             default_widths = {'Артикул': 12, 'Название товара': 40, 'Продавец': 25, 'Название компании': 30, 'ИНН': 15, 
-                            'Цена карты': 12, 'Цена': 12, 'Старая цена': 12, 'Ссылка товара': 50, 
+                            'Цена карты': 12, 'Цена': 12, 'Цена парсера Ozon': 18, 'Источник цены Ozon': 20, 'Старая цена': 12, 'Ссылка товара': 50, 
                             'Изображение': 50, 'Заказов': 12, 'Отзывов': 12, 'Рейтинг': 12, 'Работает с': 15}
             
             for col, header in enumerate(headers, 1):

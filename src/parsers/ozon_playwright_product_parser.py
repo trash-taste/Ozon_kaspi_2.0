@@ -184,6 +184,7 @@ class OzonPlaywrightProductParser:
                 if _is_plausible_page_price(page_price, listing_price):
                     product.card_price = page_price
                     product.price = page_price
+                    product.ozon_parser_price = page_price
                     higher = [price for price in prices[1:] if price > product.price]
                     product.original_price = max(higher) if higher else 0
                     logger.info(

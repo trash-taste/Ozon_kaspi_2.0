@@ -30,6 +30,9 @@ class ProductInfo:
     card_price: int = 0
     price: int = 0
     original_price: int = 0
+    ozon_parser_price: int = 0
+    ozon_price_source: str = "parser"
+    ozon_price_override_key: str = ""
     seller_id: str = ""
     seller_link: str = ""
     success: bool = False
@@ -184,6 +187,7 @@ class ProductWorker:
                 if _is_plausible_page_price(page_price, listing_price):
                     product.card_price = page_price
                     product.price = page_price
+                    product.ozon_parser_price = page_price
                     higher = [price for price in prices[1:] if price > product.price]
                     product.original_price = max(higher) if higher else 0
                     logger.info(
@@ -233,6 +237,7 @@ class ProductWorker:
             image_url=str(metadata.get("image_url") or ""),
             card_price=price,
             price=price,
+            ozon_parser_price=price,
             success=bool(title and price),
         )
         if not product.success:
