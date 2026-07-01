@@ -124,7 +124,6 @@ logs/
 reports/
 runtime/
 *.json
-!ozon_price_overrides.example.json
 *.exe
 chromedriver*
 geckodriver*
