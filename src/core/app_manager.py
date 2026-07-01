@@ -249,7 +249,7 @@ class AppManager:
                     "Проверьте logs и папку output.",
                 )
             if self.telegram_bot and user_id:
-                self._compare_with_internet_and_send(user_id)
+                self._compare_with_kaspi_and_send(user_id)
             if self.telegram_bot and user_id:
                 self._send_report_to_telegram(user_id)
             

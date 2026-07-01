@@ -40,6 +40,7 @@ PRICE_NOISE_MARKERS = (
     "кэшб",
     "рассроч",
     "месяц",
+    "/мес",
     "отзыв",
     "рейтинг",
 )
@@ -252,6 +253,8 @@ def _extract_price_from_context(context: str) -> int:
     preferred_key_groups = (
         (
             "cardPrice",
+            "priceWithCard",
+            "minPrice",
             "finalPrice",
             "currentPrice",
             "salePrice",

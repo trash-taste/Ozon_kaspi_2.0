@@ -93,6 +93,45 @@ class OzonProductURLTests(unittest.TestCase):
 
         self.assertEqual(extract_price_from_card_text(card_text), 17890)
 
+    def test_merge_uses_target_card_discount_price(self):
+        url = "https://ozon.kz/product/redmond-rmb-m614-4103859568/"
+        items = {
+            url: {
+                "title": "REDMOND Мультипекарь RMB-M614/1",
+                "price": 17392,
+            }
+        }
+
+        self.parser._merge_product_payload(items, url, {"price": 15654})
+
+        self.assertEqual(items[url]["price"], 15654)
+
+    def test_merge_keeps_price_when_candidate_is_too_low(self):
+        url = "https://ozon.kz/product/redmond-rmb-m614-4103859568/"
+        items = {
+            url: {
+                "title": "REDMOND Мультипекарь RMB-M614/1",
+                "price": 17890,
+            }
+        }
+
+        self.parser._merge_product_payload(items, url, {"price": 1450})
+
+        self.assertEqual(items[url]["price"], 17890)
+
+    def test_merge_keeps_price_when_discount_is_not_target(self):
+        url = "https://ozon.kz/product/redmond-rmb-m614-4103859568/"
+        items = {
+            url: {
+                "title": "REDMOND Мультипекарь RMB-M614/1",
+                "price": 17392,
+            }
+        }
+
+        self.parser._merge_product_payload(items, url, {"price": 16500})
+
+        self.assertEqual(items[url]["price"], 17392)
+
     def test_recovers_current_product_url_when_category_wait_times_out(self):
         self.parser.driver = SimpleNamespace(
             current_url="https://ozon.kz/product/test-product-4103859568/",

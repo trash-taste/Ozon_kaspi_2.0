@@ -22,6 +22,26 @@ from .ozon_listing_data import (
 
 logger = logging.getLogger(__name__)
 
+TARGET_CARD_DISCOUNT_MIN = 0.095
+TARGET_CARD_DISCOUNT_MAX = 0.115
+
+
+def _is_target_card_discount_price(
+    existing_price: Any,
+    new_price: Any,
+) -> bool:
+    try:
+        existing = int(existing_price or 0)
+        candidate = int(new_price or 0)
+    except (TypeError, ValueError):
+        return False
+
+    if existing <= 0 or candidate <= 0 or candidate >= existing:
+        return False
+
+    discount_rate = (existing - candidate) / existing
+    return TARGET_CARD_DISCOUNT_MIN <= discount_rate <= TARGET_CARD_DISCOUNT_MAX
+
 
 class OzonLinkParser:
     """Selenium-stealth listing collector for Ozon category/search pages."""
@@ -353,9 +373,18 @@ class OzonLinkParser:
             return
 
         current = items[url]
-        for key in ("title", "price", "image_url"):
-            if not current.get(key) and payload.get(key):
-                current[key] = payload[key]
+        if not current.get("title") and payload.get("title"):
+            current["title"] = payload["title"]
+        if not current.get("image_url") and payload.get("image_url"):
+            current["image_url"] = payload["image_url"]
+        # Ozon card price is usually about 10-11% below the visible price.
+        existing_price = current.get("price") or 0
+        new_price = payload.get("price") or 0
+        if new_price and (
+            not existing_price
+            or _is_target_card_discount_price(existing_price, new_price)
+        ):
+            current["price"] = new_price
 
     def _scroll_for_more(self) -> None:
         if not self.driver:
